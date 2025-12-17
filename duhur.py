@@ -8417,6 +8417,156 @@ def get_stock_status(count: int) -> str:
         return "🟢 TERSEDIA"
 
 # ==========================================
+# 🛒 BELI START FLOW
+# ==========================================
+
+async def beli_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start pembelian dengan validasi"""
+    user_id = update.effective_user.id
+    
+    try:
+        has_pending = await check_pending_order(user_id)
+        if has_pending:
+            await update.message.reply_text(
+                "⚠️ <b>ANDA MASIH PUNYA ORDER PENDING!</b>\n\n"
+                "Tunggu admin ACC dulu sebelum beli lagi.\n"
+                "Estimasi: 1-5 menit.\n\n"
+                "Ketik /sts untuk cek status order Anda.",
+                parse_mode="HTML"
+            )
+            return ConversationHandler.END
+        
+        keyboard = []
+        
+        monthly_stock = await check_stock_availability("Monthly")
+        monthly_btn = InlineKeyboardButton(
+            f"📅 MONTHLY - Rp 25.000 ({monthly_stock} stok)",
+            callback_data="beli_Monthly"
+        ) if monthly_stock > 0 else InlineKeyboardButton(
+            "📅 MONTHLY - HABIS",
+            callback_data="out_of_stock"
+        )
+        keyboard.append([monthly_btn])
+        
+        yearly_stock = await check_stock_availability("Yearly")
+        yearly_btn = InlineKeyboardButton(
+            f"🗓️ YEARLY - Rp 150.000 ({yearly_stock} stok)",
+            callback_data="beli_Yearly"
+        ) if yearly_stock > 0 else InlineKeyboardButton(
+            "🗓️ YEARLY - HABIS",
+            callback_data="out_of_stock"
+        )
+        keyboard.append([yearly_btn])
+        
+        keyboard.append([InlineKeyboardButton("❌ Batal", callback_data="beli_cancel")])
+        
+        await update.message.reply_text(
+            "╔════════════════════════════╗\n"
+            "║   🛒 MENU PEMBELIAN JENNI  ║\n"
+            "╚════════════════════════════╝\n\n"
+            "Silakan pilih paket yang mau dibeli:\n\n"
+            "💡 <i>Pembayaran via QRIS (instant)</i>",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="HTML"
+        )
+        return WAIT_PROOF
+    
+    except Exception as e:
+        logger.error(f"Beli start error: {e}")
+        await update.message.reply_text(
+            f"❌ Error: {str(e)[:50]}",
+            parse_mode="HTML"
+        )
+        return ConversationHandler.END
+
+
+# ==========================================
+# 💳 BELI MENU CALLBACK
+# ==========================================
+
+async def beli_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Process pemilihan plan dengan safety checks"""
+    query = update.callback_query
+    user = query.from_user
+    user_id = user.id
+    
+    try:
+        await query.answer()
+        
+        if query.data == "beli_cancel":
+            await query.message.edit_text("❌ Transaksi dibatalkan.")
+            return ConversationHandler.END
+        
+        if query.data == "out_of_stock":
+            await query.answer("⚠️ Stok habis, silakan pilih paket lain!", show_alert=True)
+            return WAIT_PROOF
+        
+        plan_dipilih = query.data.split("_")[1]
+        
+        stok = await check_stock_availability(plan_dipilih)
+        
+        if stok == 0:
+            await query.message.edit_text(
+                f"❌ <b>MAAF KAK, STOK {plan_dipilih.upper()} HABIS!</b>\n\n"
+                "Jangan transfer dulu ya. Stok baru akan masuk dalam waktu dekat.\n"
+                "Silakan cek /stock lagi nanti.",
+                parse_mode="HTML"
+            )
+            return ConversationHandler.END
+        
+        harga = await get_price_for_plan(plan_dipilih)
+        context.user_data['plan_beli'] = plan_dipilih
+        context.user_data['harga_beli'] = harga
+        
+        try:
+            await db_insert("orders", {
+                "user_id": user_id,
+                "plan": plan_dipilih,
+                "price": harga,
+                "status": "pending"
+            })
+        except Exception as e:
+            logger.error(f"Order insert error: {e}")
+        
+        try:
+            await query.message.reply_photo(
+                photo=QRIS_IMAGE,
+                caption=(
+                    f"╔════════════════════════════╗\n"
+                    f"║   💳 INVOICE PEMBAYARAN    ║\n"
+                    f"╚════════════════════════════╝\n\n"
+                    f"<b>Produk:</b> Jenni.ai {plan_dipilih}\n"
+                    f"<b>Harga :</b> {harga}\n"
+                    f"<b>Status:</b> ⏳ Menunggu pembayaran\n\n"
+                    f"📋 <b>CARA PEMBAYARAN:</b>\n"
+                    f"1️⃣ Scan QRIS di atas\n"
+                    f"2️⃣ Transfer <b>TEPAT</b> sesuai nominal\n"
+                    f"3️⃣ <b>KIRIM FOTO BUKTI</b> sekarang\n\n"
+                    f"⏰ <b>Batas waktu:</b> 30 menit\n"
+                    f"(Jika expired, silakan /beli lagi)\n\n"
+                    f"<i>Pembayaran instant ✓ Aman terpercaya ✓</i>"
+                ),
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.error(f"QRIS send error: {e}")
+            await query.message.reply_text(
+                f"❌ Error menampilkan QRIS: {e}\n"
+                f"Hubungi admin untuk bantuan.",
+                parse_mode="HTML"
+            )
+        
+        return WAIT_PROOF
+    
+    except Exception as e:
+        logger.error(f"Beli menu error: {e}")
+        await query.message.reply_text(
+            f"❌ Error: {str(e)[:50]}",
+            parse_mode="HTML"
+        )
+        return ConversationHandler.END
+
+# ==========================================
 # 📊 STOCK COMMAND (IMPROVED)
 # ==========================================
 
@@ -9953,3 +10103,4 @@ def main():
 # ==========================================
 if __name__ == "__main__":
     main()
+
