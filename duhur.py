@@ -146,6 +146,732 @@ executor = ThreadPoolExecutor(max_workers=5)
 
 
 # ==========================================
+# 🗄️ DATABASE INITIALIZATION
+# ==========================================
+
+async def init_db():
+    """Initialize semua tables untuk Jenni Store"""
+    async with aiosqlite.connect(DB_NAME) as db:
+        
+        # ==========================================
+        # 🏪 TABEL AKUN JENNI (PABRIK OTOMATIS)
+        # ==========================================
+        
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT UNIQUE NOT NULL,
+                password TEXT NOT NULL,
+                plan TEXT NOT NULL,
+                status TEXT DEFAULT 'AVAILABLE',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+        # ==========================================
+        # 📦 TABEL ORDERS (PESANAN PEMBELI)
+        # ==========================================
+        
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                plan TEXT NOT NULL,
+                price TEXT NOT NULL,
+                status TEXT DEFAULT 'pending',
+                proof_photo_id TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                approved_at TIMESTAMP
+            )
+            """
+        )
+
+        # ==========================================
+        # 📝 TABEL TRANSACTION LOGS (AUDIT TRAIL)
+        # ==========================================
+        
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS transaction_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                action TEXT NOT NULL,
+                plan TEXT,
+                user_id INTEGER,
+                status TEXT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+        # ==========================================
+        # ⭐ TABEL RATINGS (RATING DARI PEMBELI)
+        # ==========================================
+        
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ratings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                order_id INTEGER,
+                rating INTEGER,
+                comment TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+        # ==========================================
+        # 🔐 TABEL SCRAPER LOGS (LOG AKTIVITAS)
+        # ==========================================
+        
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS scraper_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                chat_id INTEGER,
+                chat_type TEXT,
+                action TEXT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+        # ==========================================
+        # 📊 USER ACTIONS TABLE (ANALYTICS & TRACKING)
+        # ==========================================
+        
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS user_actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                details TEXT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # Create indexes
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_user_actions_user_id 
+            ON user_actions(user_id)
+        """)
+        
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_user_actions_timestamp 
+            ON user_actions(timestamp)
+        """)
+
+        # ==========================================
+        # 👥 SUBSCRIBER TABLES
+        # ==========================================
+        
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS subscribers (
+                user_id INTEGER PRIMARY KEY
+            )
+            """
+        )
+
+        # ==========================================
+        # 💎 PREMIUM USERS TABLE
+        # ==========================================
+        
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS premium_users (
+                user_id INTEGER PRIMARY KEY
+            )
+            """
+        )
+
+        # ==========================================
+        # 📝 USER NOTES TABLE
+        # ==========================================
+        
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                content TEXT,
+                date_added TEXT
+            )
+            """
+        )
+
+        # ==========================================
+        # 🕌 PRAYER NOTIFICATIONS TABLE
+        # ==========================================
+        
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS prayer_subs (
+                chat_id INTEGER PRIMARY KEY,
+                city TEXT
+            )
+            """
+        )
+
+        # ==========================================
+        # 💾 MEDIA CACHE TABLE
+        # ==========================================
+        
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS media_cache (
+                url TEXT PRIMARY KEY,
+                file_id TEXT,
+                media_type TEXT,
+                timestamp REAL
+            )
+            """
+        )
+
+        await db.commit()
+        print("✅ Database Initialized (termasuk store system tables)")
+
+# ==========================================
+# 🛠️ DATABASE HELPER FUNCTIONS (ASYNC)
+# ==========================================
+
+async def db_execute(query, params=()):
+    """Execute query tanpa return (INSERT/UPDATE/DELETE)"""
+    try:
+        async with aiosqlite.connect(DB_NAME) as db:
+            await db.execute(query, params)
+            await db.commit()
+        return True
+    except Exception as e:
+        logger.error(f"[DB] Execute error: {str(e)}")
+        return False
+
+async def db_fetch_one(query, params=()):
+    """Fetch 1 row saja"""
+    try:
+        async with aiosqlite.connect(DB_NAME) as db:
+            cursor = await db.execute(query, params)
+            return await cursor.fetchone()
+    except Exception as e:
+        logger.error(f"[DB] Fetch one error: {str(e)}")
+        return None
+
+async def db_fetch_all(query, params=()):
+    """Fetch semua rows"""
+    try:
+        async with aiosqlite.connect(DB_NAME) as db:
+            cursor = await db.execute(query, params)
+            return await cursor.fetchall()
+    except Exception as e:
+        logger.error(f"[DB] Fetch all error: {str(e)}")
+        return []
+
+async def db_insert(table, data):
+    """Insert data ke table"""
+    try:
+        columns = ", ".join(data.keys())
+        placeholders = ", ".join(["?" for _ in data])
+        query = f"INSERT INTO {table} ({columns}) VALUES ({placeholders})"
+        async with aiosqlite.connect(DB_NAME) as db:
+            await db.execute(query, tuple(data.values()))
+            await db.commit()
+        return True
+    except Exception as e:
+        logger.error(f"[DB] Insert error: {str(e)}")
+        return False
+
+async def db_update(table, data, where):
+    """Update data di table"""
+    try:
+        set_clause = ", ".join([f"{k}=?" for k in data.keys()])
+        where_clause = " AND ".join([f"{k}=?" for k in where.keys()])
+        query = f"UPDATE {table} SET {set_clause} WHERE {where_clause}"
+        params = tuple(data.values()) + tuple(where.values())
+        async with aiosqlite.connect(DB_NAME) as db:
+            await db.execute(query, params)
+            await db.commit()
+        return True
+    except Exception as e:
+        logger.error(f"[DB] Update error: {str(e)}")
+        return False
+
+# ==========================================
+# 🏪 STORE OPERATIONS - ACCOUNTS
+# ==========================================
+
+async def add_account(email: str, password: str, plan: str) -> bool:
+    """Tambah akun baru ke gudang"""
+    return await db_insert("accounts", {
+        "email": email,
+        "password": password,
+        "plan": plan,
+        "status": "AVAILABLE"
+    })
+
+async def get_available_account(plan: str):
+    """Ambil 1 akun yang AVAILABLE"""
+    return await db_fetch_one(
+        "SELECT id, email, password FROM accounts WHERE status='AVAILABLE' AND plan=? LIMIT 1",
+        (plan,)
+    )
+
+async def mark_account_sold(acc_id: int) -> bool:
+    """Mark akun sebagai SOLD"""
+    return await db_update(
+        "accounts",
+        {"status": "SOLD"},
+        {"id": acc_id}
+    )
+
+async def check_stock_availability(plan: str) -> int:
+    """Cek jumlah stok untuk plan tertentu"""
+    result = await db_fetch_one(
+        "SELECT COUNT(*) FROM accounts WHERE status='AVAILABLE' AND plan=?",
+        (plan,)
+    )
+    return result[0] if result else 0
+
+async def get_all_stock():
+    """Get semua stok per plan"""
+    return await db_fetch_all(
+        "SELECT plan, COUNT(*) as total FROM accounts WHERE status='AVAILABLE' GROUP BY plan"
+    )
+
+# ==========================================
+# 📦 STORE OPERATIONS - ORDERS
+# ==========================================
+
+async def create_order(user_id: int, plan: str, price: str) -> bool:
+    """Buat order baru"""
+    return await db_insert("orders", {
+        "user_id": user_id,
+        "plan": plan,
+        "price": price,
+        "status": "pending"
+    })
+
+async def update_order_proof(user_id: int, plan: str, photo_id: str) -> bool:
+    """Update foto bukti transfer ke order"""
+    return await db_update(
+        "orders",
+        {"proof_photo_id": photo_id},
+        {"user_id": user_id, "plan": plan, "status": "pending"}
+    )
+
+async def approve_order(user_id: int, plan: str) -> bool:
+    """Approve order (ubah status jadi approved)"""
+    return await db_update(
+        "orders",
+        {"status": "approved", "approved_at": datetime.datetime.now().isoformat()},
+        {"user_id": user_id, "plan": plan, "status": "pending"}
+    )
+
+async def reject_order(user_id: int) -> bool:
+    """Reject order"""
+    return await db_update(
+        "orders",
+        {"status": "rejected"},
+        {"user_id": user_id, "status": "pending"}
+    )
+
+async def check_pending_order(user_id: int) -> bool:
+    """Cek apakah user punya order pending"""
+    result = await db_fetch_one(
+        "SELECT id FROM orders WHERE user_id=? AND status='pending'",
+        (user_id,)
+    )
+    return bool(result)
+
+async def get_user_last_order(user_id: int):
+    """Get order terakhir dari user"""
+    return await db_fetch_one(
+        "SELECT plan, status, created_at FROM orders WHERE user_id=? ORDER BY created_at DESC LIMIT 1",
+        (user_id,)
+    )
+
+# ==========================================
+# 📊 STORE OPERATIONS - REPORTING
+# ==========================================
+
+async def log_transaction(action: str, plan: str, user_id: int, status: str) -> bool:
+    """Log transaksi ke transaction_logs"""
+    return await db_insert("transaction_logs", {
+        "action": action,
+        "plan": plan,
+        "user_id": user_id,
+        "status": status
+    })
+
+async def get_sales_today():
+    """Get sales report hari ini"""
+    return await db_fetch_all("""
+        SELECT plan, COUNT(*) as total, 
+               SUM(CASE WHEN status='approved' THEN 1 ELSE 0 END) as sold
+        FROM orders
+        WHERE DATE(created_at) = DATE('now')
+        GROUP BY plan
+    """)
+
+async def get_total_sales_all_time():
+    """Get total sales sepanjang masa"""
+    result = await db_fetch_one(
+        "SELECT COUNT(*) FROM orders WHERE status='approved'"
+    )
+    return result[0] if result else 0
+
+async def get_pending_orders_count():
+    """Get jumlah order yang masih pending"""
+    result = await db_fetch_one(
+        "SELECT COUNT(*) FROM orders WHERE status='pending'"
+    )
+    return result[0] if result else 0
+
+# ==========================================
+# ⭐ STORE OPERATIONS - RATINGS
+# ==========================================
+
+async def add_rating(user_id: int, order_id: int, rating: int, comment: str = "") -> bool:
+    """Tambah rating dari pembeli"""
+    return await db_insert("ratings", {
+        "user_id": user_id,
+        "order_id": order_id,
+        "rating": rating,
+        "comment": comment
+    })
+
+async def get_average_rating():
+    """Get rating rata-rata"""
+    result = await db_fetch_one(
+        "SELECT AVG(rating) FROM ratings"
+    )
+    return result[0] if result else 0
+
+# ==========================================
+# 🔐 STORE OPERATIONS - SCRAPER LOGS
+# ==========================================
+
+async def log_scrape_activity(user_id: int, chat_id: int, chat_type: str, action: str) -> bool:
+    """Log aktivitas scrape"""
+    return await db_insert("scraper_logs", {
+        "user_id": user_id,
+        "chat_id": chat_id,
+        "chat_type": chat_type,
+        "action": action
+    })
+
+# ==========================================
+# 💾 MEDIA CACHE OPERATIONS
+# ==========================================
+
+async def get_cached_media(url: str):
+    """Ambil media dari cache"""
+    return await db_fetch_one(
+        "SELECT file_id, media_type FROM media_cache WHERE url=?",
+        (url,)
+    )
+
+async def set_cached_media(url: str, file_id: str, media_type: str) -> bool:
+    """Simpan media ke cache"""
+    return await db_insert("media_cache", {
+        "url": url,
+        "file_id": file_id,
+        "media_type": media_type,
+        "timestamp": time.time()
+    })
+
+async def clear_old_cache(days: int = 7) -> bool:
+    """Hapus cache yang sudah lama (default 7 hari)"""
+    old_timestamp = time.time() - (days * 24 * 3600)
+    return await db_execute(
+        "DELETE FROM media_cache WHERE timestamp < ?",
+        (old_timestamp,)
+    )
+
+# ==========================================
+# 👥 SUBSCRIBER OPERATIONS
+# ==========================================
+
+async def add_subscriber(user_id: int) -> bool:
+    """Tambah subscriber untuk broadcast"""
+    return await db_insert("subscribers", {
+        "user_id": user_id
+    })
+
+async def remove_subscriber(user_id: int) -> bool:
+    """Hapus subscriber"""
+    return await db_execute(
+        "DELETE FROM subscribers WHERE user_id=?",
+        (user_id,)
+    )
+
+async def get_all_subscribers():
+    """Get semua subscriber"""
+    return await db_fetch_all("SELECT user_id FROM subscribers")
+
+async def is_subscriber(user_id: int) -> bool:
+    """Cek apakah user sudah subscriber"""
+    result = await db_fetch_one(
+        "SELECT user_id FROM subscribers WHERE user_id=?",
+        (user_id,)
+    )
+    return bool(result)
+
+# ==========================================
+# 💎 PREMIUM USER OPERATIONS
+# ==========================================
+
+async def add_premium_user(user_id: int) -> bool:
+    """Tambah user ke premium list"""
+    return await db_insert("premium_users", {
+        "user_id": user_id
+    })
+
+async def remove_premium_user(user_id: int) -> bool:
+    """Hapus user dari premium list"""
+    return await db_execute(
+        "DELETE FROM premium_users WHERE user_id=?",
+        (user_id,)
+    )
+
+async def is_premium_user(user_id: int) -> bool:
+    """Cek apakah user premium"""
+    result = await db_fetch_one(
+        "SELECT user_id FROM premium_users WHERE user_id=?",
+        (user_id,)
+    )
+    return bool(result)
+
+async def get_all_premium_users():
+    """Get semua premium users"""
+    return await db_fetch_all("SELECT user_id FROM premium_users")
+
+# ==========================================
+# 📝 USER NOTES OPERATIONS
+# ==========================================
+
+async def add_user_note(user_id: int, content: str) -> bool:
+    """Tambah catatan pengguna"""
+    return await db_insert("user_notes", {
+        "user_id": user_id,
+        "content": content,
+        "date_added": datetime.datetime.now().isoformat()
+    })
+
+async def get_user_notes(user_id: int):
+    """Get semua catatan user"""
+    return await db_fetch_all(
+        "SELECT id, content, date_added FROM user_notes WHERE user_id=? ORDER BY date_added DESC",
+        (user_id,)
+    )
+
+async def delete_user_note(note_id: int) -> bool:
+    """Hapus catatan berdasarkan ID"""
+    return await db_execute(
+        "DELETE FROM user_notes WHERE id=?",
+        (note_id,)
+    )
+
+# ==========================================
+# 🕌 PRAYER NOTIFICATION OPERATIONS
+# ==========================================
+
+async def add_prayer_subscriber(chat_id: int, city: str) -> bool:
+    """Tambah subscriber notifikasi sholat"""
+    return await db_insert("prayer_subs", {
+        "chat_id": chat_id,
+        "city": city
+    })
+
+async def remove_prayer_subscriber(chat_id: int) -> bool:
+    """Hapus subscriber notifikasi sholat"""
+    return await db_execute(
+        "DELETE FROM prayer_subs WHERE chat_id=?",
+        (chat_id,)
+    )
+
+async def get_prayer_subscribers():
+    """Get semua subscriber notifikasi sholat"""
+    return await db_fetch_all("SELECT chat_id, city FROM prayer_subs")
+
+async def is_prayer_subscriber(chat_id: int) -> bool:
+    """Cek apakah chat sudah subscribe sholat"""
+    result = await db_fetch_one(
+        "SELECT chat_id FROM prayer_subs WHERE chat_id=?",
+        (chat_id,)
+    )
+    return bool(result)
+
+# ==========================================
+# 📊 USER ACTIONS OPERATIONS (ANALYTICS)
+# ==========================================
+
+async def log_user_action(user_id: int, action: str, details: str = "") -> bool:
+    """Log setiap aksi user untuk analytics & tracking"""
+    try:
+        return await db_insert("user_actions", {
+            "user_id": user_id,
+            "action": action,
+            "details": details,
+            "timestamp": datetime.datetime.now().isoformat()
+        })
+    except Exception as e:
+        logger.error(f"[ACTION LOG] Error logging action: {str(e)}")
+        return False
+
+async def get_user_actions(user_id: int, limit: int = 10):
+    """Get history aksi user (default 10 terakhir)"""
+    try:
+        return await db_fetch_all("""
+            SELECT id, action, details, timestamp 
+            FROM user_actions 
+            WHERE user_id=? 
+            ORDER BY timestamp DESC 
+            LIMIT ?
+        """, (user_id, limit))
+    except Exception as e:
+        logger.error(f"[ACTION GET] Error: {str(e)}")
+        return []
+
+async def get_user_stats(user_id: int):
+    """Get statistik user berdasarkan action logs"""
+    try:
+        result = await db_fetch_one("""
+            SELECT 
+                COUNT(*) as total_actions,
+                MAX(timestamp) as last_action,
+                COUNT(DISTINCT DATE(timestamp)) as active_days
+            FROM user_actions 
+            WHERE user_id=?
+        """, (user_id,))
+        return result
+    except Exception as e:
+        logger.error(f"[USER STATS] Error: {str(e)}")
+        return None
+
+async def get_action_summary(user_id: int):
+    """Get ringkasan aksi per tipe untuk user"""
+    try:
+        return await db_fetch_all("""
+            SELECT action, COUNT(*) as count
+            FROM user_actions 
+            WHERE user_id=?
+            GROUP BY action
+            ORDER BY count DESC
+        """, (user_id,))
+    except Exception as e:
+        logger.error(f"[ACTION SUMMARY] Error: {str(e)}")
+        return []
+
+async def get_global_action_stats():
+    """Get statistik aksi global (untuk admin dashboard)"""
+    try:
+        return await db_fetch_all("""
+            SELECT 
+                action,
+                COUNT(*) as total_count,
+                COUNT(DISTINCT user_id) as unique_users,
+                MAX(timestamp) as last_used
+            FROM user_actions
+            GROUP BY action
+            ORDER BY total_count DESC
+        """)
+    except Exception as e:
+        logger.error(f"[GLOBAL STATS] Error: {str(e)}")
+        return []
+
+async def clear_old_actions(days: int = 30) -> bool:
+    """Hapus action logs yang sudah lama (default 30 hari)"""
+    try:
+        old_date = (datetime.datetime.now() - datetime.timedelta(days=days)).isoformat()
+        return await db_execute(
+            "DELETE FROM user_actions WHERE timestamp < ?",
+            (old_date,)
+        )
+    except Exception as e:
+        logger.error(f"[ACTION CLEAR] Error: {str(e)}")
+        return False
+
+async def get_most_active_users(limit: int = 10):
+    """Get user paling aktif (untuk admin)"""
+    try:
+        return await db_fetch_all("""
+            SELECT user_id, COUNT(*) as action_count
+            FROM user_actions
+            GROUP BY user_id
+            ORDER BY action_count DESC
+            LIMIT ?
+        """, (limit,))
+    except Exception as e:
+        logger.error(f"[ACTIVE USERS] Error: {str(e)}")
+        return []
+
+async def get_daily_action_stats(days: int = 7):
+    """Get statistik aksi per hari (last N days)"""
+    try:
+        return await db_fetch_all(f"""
+            SELECT 
+                DATE(timestamp) as date,
+                COUNT(*) as total_actions,
+                COUNT(DISTINCT user_id) as unique_users
+            FROM user_actions
+            WHERE timestamp >= datetime('now', '-{days} days')
+            GROUP BY DATE(timestamp)
+            ORDER BY date DESC
+        """)
+    except Exception as e:
+        logger.error(f"[DAILY STATS] Error: {str(e)}")
+        return []
+
+# ==========================================
+# 📋 UTILITY FUNCTIONS
+# ==========================================
+
+async def get_price_for_plan(plan: str) -> str:
+    """Get harga untuk plan"""
+    prices = {
+        "Monthly": "Rp 25.000",
+        "Yearly": "Rp 150.000"
+    }
+    return prices.get(plan, "Unknown")
+
+def get_stock_icon(count: int) -> str:
+    """Get icon untuk stok"""
+    if count <= 0:
+        return "❌"
+    elif count <= 2:
+        return "⚠️"
+    elif count <= 5:
+        return "🟡"
+    else:
+        return "🟢"
+
+def get_stock_status(count: int) -> str:
+    """Get status stok"""
+    if count <= 0:
+        return "❌ HABIS"
+    elif count <= 2:
+        return "⚠️ KRITIS"
+    elif count <= 5:
+        return "🟡 SEDIKIT"
+    else:
+        return "🟢 TERSEDIA"
+
+def get_status_emoji(status: str) -> str:
+    """Get emoji untuk status order"""
+    emojis = {
+        "pending": "⏳",
+        "approved": "✅",
+        "rejected": "❌",
+        "expired": "⏰"
+    }
+    return emojis.get(status, "❓")
+
+
+# ==========================================
 # 🛠️ DATABASE HELPER FUNCTIONS (ASYNC)
 # ==========================================
 
@@ -10380,3 +11106,4 @@ def main():
 if __name__ == "__main__":
 
     main()
+
