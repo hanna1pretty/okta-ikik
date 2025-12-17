@@ -336,1076 +336,53 @@ async def init_db():
         print("✅ Database Initialized (termasuk store system tables)")
 
 # ==========================================
-# 🛠️ DATABASE HELPER FUNCTIONS (ASYNC)
+# 💾 MEDIA CACHE FUNCTIONS
 # ==========================================
 
-async def db_execute(query, params=()):
-    """Execute query tanpa return (INSERT/UPDATE/DELETE)"""
+async def save_media_cache(url: str, file_id: str, media_type: str) -> bool:
+    """Simpan media ke cache untuk reuse"""
     try:
-        async with aiosqlite.connect(DB_NAME) as db:
-            await db.execute(query, params)
-            await db.commit()
-        return True
-    except Exception as e:
-        logger.error(f"[DB] Execute error: {str(e)}")
-        return False
-
-async def db_fetch_one(query, params=()):
-    """Fetch 1 row saja"""
-    try:
-        async with aiosqlite.connect(DB_NAME) as db:
-            cursor = await db.execute(query, params)
-            return await cursor.fetchone()
-    except Exception as e:
-        logger.error(f"[DB] Fetch one error: {str(e)}")
-        return None
-
-async def db_fetch_all(query, params=()):
-    """Fetch semua rows"""
-    try:
-        async with aiosqlite.connect(DB_NAME) as db:
-            cursor = await db.execute(query, params)
-            return await cursor.fetchall()
-    except Exception as e:
-        logger.error(f"[DB] Fetch all error: {str(e)}")
-        return []
-
-async def db_insert(table, data):
-    """Insert data ke table"""
-    try:
-        columns = ", ".join(data.keys())
-        placeholders = ", ".join(["?" for _ in data])
-        query = f"INSERT INTO {table} ({columns}) VALUES ({placeholders})"
-        async with aiosqlite.connect(DB_NAME) as db:
-            await db.execute(query, tuple(data.values()))
-            await db.commit()
-        return True
-    except Exception as e:
-        logger.error(f"[DB] Insert error: {str(e)}")
-        return False
-
-async def db_update(table, data, where):
-    """Update data di table"""
-    try:
-        set_clause = ", ".join([f"{k}=?" for k in data.keys()])
-        where_clause = " AND ".join([f"{k}=?" for k in where.keys()])
-        query = f"UPDATE {table} SET {set_clause} WHERE {where_clause}"
-        params = tuple(data.values()) + tuple(where.values())
-        async with aiosqlite.connect(DB_NAME) as db:
-            await db.execute(query, params)
-            await db.commit()
-        return True
-    except Exception as e:
-        logger.error(f"[DB] Update error: {str(e)}")
-        return False
-
-# ==========================================
-# 🏪 STORE OPERATIONS - ACCOUNTS
-# ==========================================
-
-async def add_account(email: str, password: str, plan: str) -> bool:
-    """Tambah akun baru ke gudang"""
-    return await db_insert("accounts", {
-        "email": email,
-        "password": password,
-        "plan": plan,
-        "status": "AVAILABLE"
-    })
-
-async def get_available_account(plan: str):
-    """Ambil 1 akun yang AVAILABLE"""
-    return await db_fetch_one(
-        "SELECT id, email, password FROM accounts WHERE status='AVAILABLE' AND plan=? LIMIT 1",
-        (plan,)
-    )
-
-async def mark_account_sold(acc_id: int) -> bool:
-    """Mark akun sebagai SOLD"""
-    return await db_update(
-        "accounts",
-        {"status": "SOLD"},
-        {"id": acc_id}
-    )
-
-async def check_stock_availability(plan: str) -> int:
-    """Cek jumlah stok untuk plan tertentu"""
-    result = await db_fetch_one(
-        "SELECT COUNT(*) FROM accounts WHERE status='AVAILABLE' AND plan=?",
-        (plan,)
-    )
-    return result[0] if result else 0
-
-async def get_all_stock():
-    """Get semua stok per plan"""
-    return await db_fetch_all(
-        "SELECT plan, COUNT(*) as total FROM accounts WHERE status='AVAILABLE' GROUP BY plan"
-    )
-
-# ==========================================
-# 📦 STORE OPERATIONS - ORDERS
-# ==========================================
-
-async def create_order(user_id: int, plan: str, price: str) -> bool:
-    """Buat order baru"""
-    return await db_insert("orders", {
-        "user_id": user_id,
-        "plan": plan,
-        "price": price,
-        "status": "pending"
-    })
-
-async def update_order_proof(user_id: int, plan: str, photo_id: str) -> bool:
-    """Update foto bukti transfer ke order"""
-    return await db_update(
-        "orders",
-        {"proof_photo_id": photo_id},
-        {"user_id": user_id, "plan": plan, "status": "pending"}
-    )
-
-async def approve_order(user_id: int, plan: str) -> bool:
-    """Approve order (ubah status jadi approved)"""
-    return await db_update(
-        "orders",
-        {"status": "approved", "approved_at": datetime.datetime.now().isoformat()},
-        {"user_id": user_id, "plan": plan, "status": "pending"}
-    )
-
-async def reject_order(user_id: int) -> bool:
-    """Reject order"""
-    return await db_update(
-        "orders",
-        {"status": "rejected"},
-        {"user_id": user_id, "status": "pending"}
-    )
-
-async def check_pending_order(user_id: int) -> bool:
-    """Cek apakah user punya order pending"""
-    result = await db_fetch_one(
-        "SELECT id FROM orders WHERE user_id=? AND status='pending'",
-        (user_id,)
-    )
-    return bool(result)
-
-async def get_user_last_order(user_id: int):
-    """Get order terakhir dari user"""
-    return await db_fetch_one(
-        "SELECT plan, status, created_at FROM orders WHERE user_id=? ORDER BY created_at DESC LIMIT 1",
-        (user_id,)
-    )
-
-# ==========================================
-# 📊 STORE OPERATIONS - REPORTING
-# ==========================================
-
-async def log_transaction(action: str, plan: str, user_id: int, status: str) -> bool:
-    """Log transaksi ke transaction_logs"""
-    return await db_insert("transaction_logs", {
-        "action": action,
-        "plan": plan,
-        "user_id": user_id,
-        "status": status
-    })
-
-async def get_sales_today():
-    """Get sales report hari ini"""
-    return await db_fetch_all("""
-        SELECT plan, COUNT(*) as total, 
-               SUM(CASE WHEN status='approved' THEN 1 ELSE 0 END) as sold
-        FROM orders
-        WHERE DATE(created_at) = DATE('now')
-        GROUP BY plan
-    """)
-
-async def get_total_sales_all_time():
-    """Get total sales sepanjang masa"""
-    result = await db_fetch_one(
-        "SELECT COUNT(*) FROM orders WHERE status='approved'"
-    )
-    return result[0] if result else 0
-
-async def get_pending_orders_count():
-    """Get jumlah order yang masih pending"""
-    result = await db_fetch_one(
-        "SELECT COUNT(*) FROM orders WHERE status='pending'"
-    )
-    return result[0] if result else 0
-
-# ==========================================
-# ⭐ STORE OPERATIONS - RATINGS
-# ==========================================
-
-async def add_rating(user_id: int, order_id: int, rating: int, comment: str = "") -> bool:
-    """Tambah rating dari pembeli"""
-    return await db_insert("ratings", {
-        "user_id": user_id,
-        "order_id": order_id,
-        "rating": rating,
-        "comment": comment
-    })
-
-async def get_average_rating():
-    """Get rating rata-rata"""
-    result = await db_fetch_one(
-        "SELECT AVG(rating) FROM ratings"
-    )
-    return result[0] if result else 0
-
-# ==========================================
-# 🔐 STORE OPERATIONS - SCRAPER LOGS
-# ==========================================
-
-async def log_scrape_activity(user_id: int, chat_id: int, chat_type: str, action: str) -> bool:
-    """Log aktivitas scrape"""
-    return await db_insert("scraper_logs", {
-        "user_id": user_id,
-        "chat_id": chat_id,
-        "chat_type": chat_type,
-        "action": action
-    })
-
-# ==========================================
-# 💾 MEDIA CACHE OPERATIONS
-# ==========================================
-
-async def get_cached_media(url: str):
-    """Ambil media dari cache"""
-    return await db_fetch_one(
-        "SELECT file_id, media_type FROM media_cache WHERE url=?",
-        (url,)
-    )
-
-async def set_cached_media(url: str, file_id: str, media_type: str) -> bool:
-    """Simpan media ke cache"""
-    return await db_insert("media_cache", {
-        "url": url,
-        "file_id": file_id,
-        "media_type": media_type,
-        "timestamp": time.time()
-    })
-
-async def clear_old_cache(days: int = 7) -> bool:
-    """Hapus cache yang sudah lama (default 7 hari)"""
-    old_timestamp = time.time() - (days * 24 * 3600)
-    return await db_execute(
-        "DELETE FROM media_cache WHERE timestamp < ?",
-        (old_timestamp,)
-    )
-
-# ==========================================
-# 👥 SUBSCRIBER OPERATIONS
-# ==========================================
-
-async def add_subscriber(user_id: int) -> bool:
-    """Tambah subscriber untuk broadcast"""
-    return await db_insert("subscribers", {
-        "user_id": user_id
-    })
-
-async def remove_subscriber(user_id: int) -> bool:
-    """Hapus subscriber"""
-    return await db_execute(
-        "DELETE FROM subscribers WHERE user_id=?",
-        (user_id,)
-    )
-
-async def get_all_subscribers():
-    """Get semua subscriber"""
-    return await db_fetch_all("SELECT user_id FROM subscribers")
-
-async def is_subscriber(user_id: int) -> bool:
-    """Cek apakah user sudah subscriber"""
-    result = await db_fetch_one(
-        "SELECT user_id FROM subscribers WHERE user_id=?",
-        (user_id,)
-    )
-    return bool(result)
-
-# ==========================================
-# 💎 PREMIUM USER OPERATIONS
-# ==========================================
-
-async def add_premium_user(user_id: int) -> bool:
-    """Tambah user ke premium list"""
-    return await db_insert("premium_users", {
-        "user_id": user_id
-    })
-
-async def remove_premium_user(user_id: int) -> bool:
-    """Hapus user dari premium list"""
-    return await db_execute(
-        "DELETE FROM premium_users WHERE user_id=?",
-        (user_id,)
-    )
-
-async def is_premium_user(user_id: int) -> bool:
-    """Cek apakah user premium"""
-    result = await db_fetch_one(
-        "SELECT user_id FROM premium_users WHERE user_id=?",
-        (user_id,)
-    )
-    return bool(result)
-
-async def get_all_premium_users():
-    """Get semua premium users"""
-    return await db_fetch_all("SELECT user_id FROM premium_users")
-
-# ==========================================
-# 📝 USER NOTES OPERATIONS
-# ==========================================
-
-async def add_user_note(user_id: int, content: str) -> bool:
-    """Tambah catatan pengguna"""
-    return await db_insert("user_notes", {
-        "user_id": user_id,
-        "content": content,
-        "date_added": datetime.datetime.now().isoformat()
-    })
-
-async def get_user_notes(user_id: int):
-    """Get semua catatan user"""
-    return await db_fetch_all(
-        "SELECT id, content, date_added FROM user_notes WHERE user_id=? ORDER BY date_added DESC",
-        (user_id,)
-    )
-
-async def delete_user_note(note_id: int) -> bool:
-    """Hapus catatan berdasarkan ID"""
-    return await db_execute(
-        "DELETE FROM user_notes WHERE id=?",
-        (note_id,)
-    )
-
-# ==========================================
-# 🕌 PRAYER NOTIFICATION OPERATIONS
-# ==========================================
-
-async def add_prayer_subscriber(chat_id: int, city: str) -> bool:
-    """Tambah subscriber notifikasi sholat"""
-    return await db_insert("prayer_subs", {
-        "chat_id": chat_id,
-        "city": city
-    })
-
-async def remove_prayer_subscriber(chat_id: int) -> bool:
-    """Hapus subscriber notifikasi sholat"""
-    return await db_execute(
-        "DELETE FROM prayer_subs WHERE chat_id=?",
-        (chat_id,)
-    )
-
-async def get_prayer_subscribers():
-    """Get semua subscriber notifikasi sholat"""
-    return await db_fetch_all("SELECT chat_id, city FROM prayer_subs")
-
-async def is_prayer_subscriber(chat_id: int) -> bool:
-    """Cek apakah chat sudah subscribe sholat"""
-    result = await db_fetch_one(
-        "SELECT chat_id FROM prayer_subs WHERE chat_id=?",
-        (chat_id,)
-    )
-    return bool(result)
-
-# ==========================================
-# 📊 USER ACTIONS OPERATIONS (ANALYTICS)
-# ==========================================
-
-async def log_user_action(user_id: int, action: str, details: str = "") -> bool:
-    """Log setiap aksi user untuk analytics & tracking"""
-    try:
-        return await db_insert("user_actions", {
-            "user_id": user_id,
-            "action": action,
-            "details": details,
-            "timestamp": datetime.datetime.now().isoformat()
+        await db_insert("media_cache", {
+            "url": url,
+            "file_id": file_id,
+            "media_type": media_type,
+            "timestamp": time.time()
         })
-    except Exception as e:
-        logger.error(f"[ACTION LOG] Error logging action: {str(e)}")
-        return False
-
-async def get_user_actions(user_id: int, limit: int = 10):
-    """Get history aksi user (default 10 terakhir)"""
-    try:
-        return await db_fetch_all("""
-            SELECT id, action, details, timestamp 
-            FROM user_actions 
-            WHERE user_id=? 
-            ORDER BY timestamp DESC 
-            LIMIT ?
-        """, (user_id, limit))
-    except Exception as e:
-        logger.error(f"[ACTION GET] Error: {str(e)}")
-        return []
-
-async def get_user_stats(user_id: int):
-    """Get statistik user berdasarkan action logs"""
-    try:
-        result = await db_fetch_one("""
-            SELECT 
-                COUNT(*) as total_actions,
-                MAX(timestamp) as last_action,
-                COUNT(DISTINCT DATE(timestamp)) as active_days
-            FROM user_actions 
-            WHERE user_id=?
-        """, (user_id,))
-        return result
-    except Exception as e:
-        logger.error(f"[USER STATS] Error: {str(e)}")
-        return None
-
-async def get_action_summary(user_id: int):
-    """Get ringkasan aksi per tipe untuk user"""
-    try:
-        return await db_fetch_all("""
-            SELECT action, COUNT(*) as count
-            FROM user_actions 
-            WHERE user_id=?
-            GROUP BY action
-            ORDER BY count DESC
-        """, (user_id,))
-    except Exception as e:
-        logger.error(f"[ACTION SUMMARY] Error: {str(e)}")
-        return []
-
-async def get_global_action_stats():
-    """Get statistik aksi global (untuk admin dashboard)"""
-    try:
-        return await db_fetch_all("""
-            SELECT 
-                action,
-                COUNT(*) as total_count,
-                COUNT(DISTINCT user_id) as unique_users,
-                MAX(timestamp) as last_used
-            FROM user_actions
-            GROUP BY action
-            ORDER BY total_count DESC
-        """)
-    except Exception as e:
-        logger.error(f"[GLOBAL STATS] Error: {str(e)}")
-        return []
-
-async def clear_old_actions(days: int = 30) -> bool:
-    """Hapus action logs yang sudah lama (default 30 hari)"""
-    try:
-        old_date = (datetime.datetime.now() - datetime.timedelta(days=days)).isoformat()
-        return await db_execute(
-            "DELETE FROM user_actions WHERE timestamp < ?",
-            (old_date,)
-        )
-    except Exception as e:
-        logger.error(f"[ACTION CLEAR] Error: {str(e)}")
-        return False
-
-async def get_most_active_users(limit: int = 10):
-    """Get user paling aktif (untuk admin)"""
-    try:
-        return await db_fetch_all("""
-            SELECT user_id, COUNT(*) as action_count
-            FROM user_actions
-            GROUP BY user_id
-            ORDER BY action_count DESC
-            LIMIT ?
-        """, (limit,))
-    except Exception as e:
-        logger.error(f"[ACTIVE USERS] Error: {str(e)}")
-        return []
-
-async def get_daily_action_stats(days: int = 7):
-    """Get statistik aksi per hari (last N days)"""
-    try:
-        return await db_fetch_all(f"""
-            SELECT 
-                DATE(timestamp) as date,
-                COUNT(*) as total_actions,
-                COUNT(DISTINCT user_id) as unique_users
-            FROM user_actions
-            WHERE timestamp >= datetime('now', '-{days} days')
-            GROUP BY DATE(timestamp)
-            ORDER BY date DESC
-        """)
-    except Exception as e:
-        logger.error(f"[DAILY STATS] Error: {str(e)}")
-        return []
-
-# ==========================================
-# 📋 UTILITY FUNCTIONS
-# ==========================================
-
-async def get_price_for_plan(plan: str) -> str:
-    """Get harga untuk plan"""
-    prices = {
-        "Monthly": "Rp 25.000",
-        "Yearly": "Rp 150.000"
-    }
-    return prices.get(plan, "Unknown")
-
-def get_stock_icon(count: int) -> str:
-    """Get icon untuk stok"""
-    if count <= 0:
-        return "❌"
-    elif count <= 2:
-        return "⚠️"
-    elif count <= 5:
-        return "🟡"
-    else:
-        return "🟢"
-
-def get_stock_status(count: int) -> str:
-    """Get status stok"""
-    if count <= 0:
-        return "❌ HABIS"
-    elif count <= 2:
-        return "⚠️ KRITIS"
-    elif count <= 5:
-        return "🟡 SEDIKIT"
-    else:
-        return "🟢 TERSEDIA"
-
-def get_status_emoji(status: str) -> str:
-    """Get emoji untuk status order"""
-    emojis = {
-        "pending": "⏳",
-        "approved": "✅",
-        "rejected": "❌",
-        "expired": "⏰"
-    }
-    return emojis.get(status, "❓")
-
-
-# ==========================================
-# 🛠️ DATABASE HELPER FUNCTIONS (ASYNC)
-# ==========================================
-
-async def db_execute(query, params=()):
-    """Execute query tanpa return (INSERT/UPDATE/DELETE)"""
-    try:
-        async with aiosqlite.connect(DB_NAME) as db:
-            await db.execute(query, params)
-            await db.commit()
         return True
     except Exception as e:
-        logger.error(f"[DB] Execute error: {str(e)}")
+        logger.error(f"[CACHE] Save error: {str(e)}")
         return False
 
-async def db_fetch_one(query, params=()):
-    """Fetch 1 row saja"""
-    try:
-        async with aiosqlite.connect(DB_NAME) as db:
-            cursor = await db.execute(query, params)
-            return await cursor.fetchone()
-    except Exception as e:
-        logger.error(f"[DB] Fetch one error: {str(e)}")
-        return None
-
-async def db_fetch_all(query, params=()):
-    """Fetch semua rows"""
-    try:
-        async with aiosqlite.connect(DB_NAME) as db:
-            cursor = await db.execute(query, params)
-            return await cursor.fetchall()
-    except Exception as e:
-        logger.error(f"[DB] Fetch all error: {str(e)}")
-        return []
-
-async def db_insert(table, data):
-    """Insert data ke table"""
-    try:
-        columns = ", ".join(data.keys())
-        placeholders = ", ".join(["?" for _ in data])
-        query = f"INSERT INTO {table} ({columns}) VALUES ({placeholders})"
-        async with aiosqlite.connect(DB_NAME) as db:
-            await db.execute(query, tuple(data.values()))
-            await db.commit()
-        return True
-    except Exception as e:
-        logger.error(f"[DB] Insert error: {str(e)}")
-        return False
-
-async def db_update(table, data, where):
-    """Update data di table"""
-    try:
-        set_clause = ", ".join([f"{k}=?" for k in data.keys()])
-        where_clause = " AND ".join([f"{k}=?" for k in where.keys()])
-        query = f"UPDATE {table} SET {set_clause} WHERE {where_clause}"
-        params = tuple(data.values()) + tuple(where.values())
-        async with aiosqlite.connect(DB_NAME) as db:
-            await db.execute(query, params)
-            await db.commit()
-        return True
-    except Exception as e:
-        logger.error(f"[DB] Update error: {str(e)}")
-        return False
-
-# ==========================================
-# 🏪 STORE OPERATIONS - ACCOUNTS
-# ==========================================
-
-async def add_account(email: str, password: str, plan: str) -> bool:
-    """Tambah akun baru ke gudang"""
-    return await db_insert("accounts", {
-        "email": email,
-        "password": password,
-        "plan": plan,
-        "status": "AVAILABLE"
-    })
-
-async def get_available_account(plan: str):
-    """Ambil 1 akun yang AVAILABLE"""
-    return await db_fetch_one(
-        "SELECT id, email, password FROM accounts WHERE status='AVAILABLE' AND plan=? LIMIT 1",
-        (plan,)
-    )
-
-async def mark_account_sold(acc_id: int) -> bool:
-    """Mark akun sebagai SOLD"""
-    return await db_update(
-        "accounts",
-        {"status": "SOLD"},
-        {"id": acc_id}
-    )
-
-async def check_stock_availability(plan: str) -> int:
-    """Cek jumlah stok untuk plan tertentu"""
-    result = await db_fetch_one(
-        "SELECT COUNT(*) FROM accounts WHERE status='AVAILABLE' AND plan=?",
-        (plan,)
-    )
-    return result[0] if result else 0
-
-async def get_all_stock():
-    """Get semua stok per plan"""
-    return await db_fetch_all(
-        "SELECT plan, COUNT(*) as total FROM accounts WHERE status='AVAILABLE' GROUP BY plan"
-    )
-
-# ==========================================
-# 📦 STORE OPERATIONS - ORDERS
-# ==========================================
-
-async def create_order(user_id: int, plan: str, price: str) -> bool:
-    """Buat order baru"""
-    return await db_insert("orders", {
-        "user_id": user_id,
-        "plan": plan,
-        "price": price,
-        "status": "pending"
-    })
-
-async def update_order_proof(user_id: int, plan: str, photo_id: str) -> bool:
-    """Update foto bukti transfer ke order"""
-    return await db_update(
-        "orders",
-        {"proof_photo_id": photo_id},
-        {"user_id": user_id, "plan": plan, "status": "pending"}
-    )
-
-async def approve_order(user_id: int, plan: str) -> bool:
-    """Approve order (ubah status jadi approved)"""
-    return await db_update(
-        "orders",
-        {"status": "approved", "approved_at": datetime.datetime.now().isoformat()},
-        {"user_id": user_id, "plan": plan, "status": "pending"}
-    )
-
-async def reject_order(user_id: int) -> bool:
-    """Reject order"""
-    return await db_update(
-        "orders",
-        {"status": "rejected"},
-        {"user_id": user_id, "status": "pending"}
-    )
-
-async def check_pending_order(user_id: int) -> bool:
-    """Cek apakah user punya order pending"""
-    result = await db_fetch_one(
-        "SELECT id FROM orders WHERE user_id=? AND status='pending'",
-        (user_id,)
-    )
-    return bool(result)
-
-async def get_user_last_order(user_id: int):
-    """Get order terakhir dari user"""
-    return await db_fetch_one(
-        "SELECT plan, status, created_at FROM orders WHERE user_id=? ORDER BY created_at DESC LIMIT 1",
-        (user_id,)
-    )
-
-# ==========================================
-# 📊 STORE OPERATIONS - REPORTING
-# ==========================================
-
-async def log_transaction(action: str, plan: str, user_id: int, status: str) -> bool:
-    """Log transaksi ke transaction_logs"""
-    return await db_insert("transaction_logs", {
-        "action": action,
-        "plan": plan,
-        "user_id": user_id,
-        "status": status
-    })
-
-async def get_sales_today():
-    """Get sales report hari ini"""
-    return await db_fetch_all("""
-        SELECT plan, COUNT(*) as total, 
-               SUM(CASE WHEN status='approved' THEN 1 ELSE 0 END) as sold
-        FROM orders
-        WHERE DATE(created_at) = DATE('now')
-        GROUP BY plan
-    """)
-
-async def get_total_sales_all_time():
-    """Get total sales sepanjang masa"""
-    result = await db_fetch_one(
-        "SELECT COUNT(*) FROM orders WHERE status='approved'"
-    )
-    return result[0] if result else 0
-
-async def get_pending_orders_count():
-    """Get jumlah order yang masih pending"""
-    result = await db_fetch_one(
-        "SELECT COUNT(*) FROM orders WHERE status='pending'"
-    )
-    return result[0] if result else 0
-
-# ==========================================
-# ⭐ STORE OPERATIONS - RATINGS
-# ==========================================
-
-async def add_rating(user_id: int, order_id: int, rating: int, comment: str = "") -> bool:
-    """Tambah rating dari pembeli"""
-    return await db_insert("ratings", {
-        "user_id": user_id,
-        "order_id": order_id,
-        "rating": rating,
-        "comment": comment
-    })
-
-async def get_average_rating():
-    """Get rating rata-rata"""
-    result = await db_fetch_one(
-        "SELECT AVG(rating) FROM ratings"
-    )
-    return result[0] if result else 0
-
-# ==========================================
-# 🔐 STORE OPERATIONS - SCRAPER LOGS
-# ==========================================
-
-async def log_scrape_activity(user_id: int, chat_id: int, chat_type: str, action: str) -> bool:
-    """Log aktivitas scrape"""
-    return await db_insert("scraper_logs", {
-        "user_id": user_id,
-        "chat_id": chat_id,
-        "chat_type": chat_type,
-        "action": action
-    })
-
-# ==========================================
-# 💾 MEDIA CACHE OPERATIONS
-# ==========================================
-
-async def get_cached_media(url: str):
+async def get_media_cache(url: str) -> dict:
     """Ambil media dari cache"""
-    return await db_fetch_one(
-        "SELECT file_id, media_type FROM media_cache WHERE url=?",
-        (url,)
-    )
-
-async def set_cached_media(url: str, file_id: str, media_type: str) -> bool:
-    """Simpan media ke cache"""
-    return await db_insert("media_cache", {
-        "url": url,
-        "file_id": file_id,
-        "media_type": media_type,
-        "timestamp": time.time()
-    })
-
-async def clear_old_cache(days: int = 7) -> bool:
-    """Hapus cache yang sudah lama (default 7 hari)"""
-    old_timestamp = time.time() - (days * 24 * 3600)
-    return await db_execute(
-        "DELETE FROM media_cache WHERE timestamp < ?",
-        (old_timestamp,)
-    )
-
-# ==========================================
-# 👥 SUBSCRIBER OPERATIONS
-# ==========================================
-
-async def add_subscriber(user_id: int) -> bool:
-    """Tambah subscriber untuk broadcast"""
-    return await db_insert("subscribers", {
-        "user_id": user_id
-    })
-
-async def remove_subscriber(user_id: int) -> bool:
-    """Hapus subscriber"""
-    return await db_execute(
-        "DELETE FROM subscribers WHERE user_id=?",
-        (user_id,)
-    )
-
-async def get_all_subscribers():
-    """Get semua subscriber"""
-    return await db_fetch_all("SELECT user_id FROM subscribers")
-
-async def is_subscriber(user_id: int) -> bool:
-    """Cek apakah user sudah subscriber"""
-    result = await db_fetch_one(
-        "SELECT user_id FROM subscribers WHERE user_id=?",
-        (user_id,)
-    )
-    return bool(result)
-
-# ==========================================
-# 💎 PREMIUM USER OPERATIONS
-# ==========================================
-
-async def add_premium_user(user_id: int) -> bool:
-    """Tambah user ke premium list"""
-    return await db_insert("premium_users", {
-        "user_id": user_id
-    })
-
-async def remove_premium_user(user_id: int) -> bool:
-    """Hapus user dari premium list"""
-    return await db_execute(
-        "DELETE FROM premium_users WHERE user_id=?",
-        (user_id,)
-    )
-
-async def is_premium_user(user_id: int) -> bool:
-    """Cek apakah user premium"""
-    result = await db_fetch_one(
-        "SELECT user_id FROM premium_users WHERE user_id=?",
-        (user_id,)
-    )
-    return bool(result)
-
-async def get_all_premium_users():
-    """Get semua premium users"""
-    return await db_fetch_all("SELECT user_id FROM premium_users")
-
-# ==========================================
-# 📝 USER NOTES OPERATIONS
-# ==========================================
-
-async def add_user_note(user_id: int, content: str) -> bool:
-    """Tambah catatan pengguna"""
-    return await db_insert("user_notes", {
-        "user_id": user_id,
-        "content": content,
-        "date_added": datetime.datetime.now().isoformat()
-    })
-
-async def get_user_notes(user_id: int):
-    """Get semua catatan user"""
-    return await db_fetch_all(
-        "SELECT id, content, date_added FROM user_notes WHERE user_id=? ORDER BY date_added DESC",
-        (user_id,)
-    )
-
-async def delete_user_note(note_id: int) -> bool:
-    """Hapus catatan berdasarkan ID"""
-    return await db_execute(
-        "DELETE FROM user_notes WHERE id=?",
-        (note_id,)
-    )
-
-# ==========================================
-# 🕌 PRAYER NOTIFICATION OPERATIONS
-# ==========================================
-
-async def add_prayer_subscriber(chat_id: int, city: str) -> bool:
-    """Tambah subscriber notifikasi sholat"""
-    return await db_insert("prayer_subs", {
-        "chat_id": chat_id,
-        "city": city
-    })
-
-async def remove_prayer_subscriber(chat_id: int) -> bool:
-    """Hapus subscriber notifikasi sholat"""
-    return await db_execute(
-        "DELETE FROM prayer_subs WHERE chat_id=?",
-        (chat_id,)
-    )
-
-async def get_prayer_subscribers():
-    """Get semua subscriber notifikasi sholat"""
-    return await db_fetch_all("SELECT chat_id, city FROM prayer_subs")
-
-async def is_prayer_subscriber(chat_id: int) -> bool:
-    """Cek apakah chat sudah subscribe sholat"""
-    result = await db_fetch_one(
-        "SELECT chat_id FROM prayer_subs WHERE chat_id=?",
-        (chat_id,)
-    )
-    return bool(result)
-
-# ==========================================
-# 📊 USER ACTIONS OPERATIONS (ANALYTICS)
-# ==========================================
-
-async def log_user_action(user_id: int, action: str, details: str = "") -> bool:
-    """Log setiap aksi user untuk analytics & tracking"""
     try:
-        return await db_insert("user_actions", {
-            "user_id": user_id,
-            "action": action,
-            "details": details,
-            "timestamp": datetime.datetime.now().isoformat()
-        })
-    except Exception as e:
-        logger.error(f"[ACTION LOG] Error logging action: {str(e)}")
-        return False
-
-async def get_user_actions(user_id: int, limit: int = 10):
-    """Get history aksi user (default 10 terakhir)"""
-    try:
-        return await db_fetch_all("""
-            SELECT id, action, details, timestamp 
-            FROM user_actions 
-            WHERE user_id=? 
-            ORDER BY timestamp DESC 
-            LIMIT ?
-        """, (user_id, limit))
-    except Exception as e:
-        logger.error(f"[ACTION GET] Error: {str(e)}")
-        return []
-
-async def get_user_stats(user_id: int):
-    """Get statistik user berdasarkan action logs"""
-    try:
-        result = await db_fetch_one("""
-            SELECT 
-                COUNT(*) as total_actions,
-                MAX(timestamp) as last_action,
-                COUNT(DISTINCT DATE(timestamp)) as active_days
-            FROM user_actions 
-            WHERE user_id=?
-        """, (user_id,))
-        return result
-    except Exception as e:
-        logger.error(f"[USER STATS] Error: {str(e)}")
-        return None
-
-async def get_action_summary(user_id: int):
-    """Get ringkasan aksi per tipe untuk user"""
-    try:
-        return await db_fetch_all("""
-            SELECT action, COUNT(*) as count
-            FROM user_actions 
-            WHERE user_id=?
-            GROUP BY action
-            ORDER BY count DESC
-        """, (user_id,))
-    except Exception as e:
-        logger.error(f"[ACTION SUMMARY] Error: {str(e)}")
-        return []
-
-async def get_global_action_stats():
-    """Get statistik aksi global (untuk admin dashboard)"""
-    try:
-        return await db_fetch_all("""
-            SELECT 
-                action,
-                COUNT(*) as total_count,
-                COUNT(DISTINCT user_id) as unique_users,
-                MAX(timestamp) as last_used
-            FROM user_actions
-            GROUP BY action
-            ORDER BY total_count DESC
-        """)
-    except Exception as e:
-        logger.error(f"[GLOBAL STATS] Error: {str(e)}")
-        return []
-
-async def clear_old_actions(days: int = 30) -> bool:
-    """Hapus action logs yang sudah lama (default 30 hari)"""
-    try:
-        old_date = (datetime.datetime.now() - datetime.timedelta(days=days)).isoformat()
-        return await db_execute(
-            "DELETE FROM user_actions WHERE timestamp < ?",
-            (old_date,)
+        result = await db_fetch_one(
+            "SELECT file_id, media_type FROM media_cache WHERE url=?",
+            (url,)
         )
+        if result:
+            return {
+                "file_id": result[0],
+                "media_type": result[1],
+                "cached": True
+            }
+        return {"cached": False}
     except Exception as e:
-        logger.error(f"[ACTION CLEAR] Error: {str(e)}")
+        logger.error(f"[CACHE] Get error: {str(e)}")
+        return {"cached": False}
+
+async def clear_old_media_cache(days: int = 365) -> bool:  # ✅ UBAH dari 7 → 365
+    """Hapus cache yang sudah lama (setahun)"""
+    try:
+        old_timestamp = time.time() - (days * 24 * 3600)
+        await db_execute(
+            "DELETE FROM media_cache WHERE timestamp < ?",
+            (old_timestamp,)
+        )
+        return True
+    except Exception as e:
+        logger.error(f"[CACHE] Clear error: {str(e)}")
         return False
-
-async def get_most_active_users(limit: int = 10):
-    """Get user paling aktif (untuk admin)"""
-    try:
-        return await db_fetch_all("""
-            SELECT user_id, COUNT(*) as action_count
-            FROM user_actions
-            GROUP BY user_id
-            ORDER BY action_count DESC
-            LIMIT ?
-        """, (limit,))
-    except Exception as e:
-        logger.error(f"[ACTIVE USERS] Error: {str(e)}")
-        return []
-
-async def get_daily_action_stats(days: int = 7):
-    """Get statistik aksi per hari (last N days)"""
-    try:
-        return await db_fetch_all(f"""
-            SELECT 
-                DATE(timestamp) as date,
-                COUNT(*) as total_actions,
-                COUNT(DISTINCT user_id) as unique_users
-            FROM user_actions
-            WHERE timestamp >= datetime('now', '-{days} days')
-            GROUP BY DATE(timestamp)
-            ORDER BY date DESC
-        """)
-    except Exception as e:
-        logger.error(f"[DAILY STATS] Error: {str(e)}")
-        return []
-
-# ==========================================
-# 📋 UTILITY FUNCTIONS
-# ==========================================
-
-async def get_price_for_plan(plan: str) -> str:
-    """Get harga untuk plan"""
-    prices = {
-        "Monthly": "Rp 25.000",
-        "Yearly": "Rp 150.000"
-    }
-    return prices.get(plan, "Unknown")
-
-def get_stock_icon(count: int) -> str:
-    """Get icon untuk stok"""
-    if count <= 0:
-        return "❌"
-    elif count <= 2:
-        return "⚠️"
-    elif count <= 5:
-        return "🟡"
-    else:
-        return "🟢"
-
-def get_stock_status(count: int) -> str:
-    """Get status stok"""
-    if count <= 0:
-        return "❌ HABIS"
-    elif count <= 2:
-        return "⚠️ KRITIS"
-    elif count <= 5:
-        return "🟡 SEDIKIT"
-    else:
-        return "🟢 TERSEDIA"
-
-def get_status_emoji(status: str) -> str:
-    """Get emoji untuk status order"""
-    emojis = {
-        "pending": "⏳",
-        "approved": "✅",
-        "rejected": "❌",
-        "expired": "⏰"
-    }
-    return emojis.get(status, "❓")
-
 # ==========================================
 # ⚙️ CONFIG MODIFIER (AUTO UPDATE PROXY)
 # ==========================================
@@ -1639,6 +616,22 @@ def escape_md(text):
         if text
         else "N/A"
     )
+
+# ==========================================
+# 🔐 USER REGISTRATION CHECK
+# ==========================================
+
+async def is_registered(user_id: int) -> bool:
+    """Check apakah user sudah terdaftar"""
+    try:
+        result = await db_fetch_one(
+            "SELECT user_id FROM premium_users WHERE user_id=?",
+            (user_id,)
+        )
+        return bool(result)
+    except Exception as e:
+        logger.error(f"[REGISTER CHECK] Error: {str(e)}")
+        return False
 
 
 # ==========================================
@@ -2305,7 +1298,7 @@ async def gen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         os.remove(filename)
 
 # ==========================================
-# 📥 DOWNLOADER DENGAN PROGRESS BAR & ERROR HANDLING
+# 📥 DOWNLOADER (/dl) - TIKTOK API + YT-DLP
 # ==========================================
 
 ERROR_MESSAGES = {
@@ -2320,45 +1313,40 @@ ERROR_MESSAGES = {
     "Restricted": "🔐 Content restricted in your region"
 }
 
-async def update_progress_bar(status_msg, current_bytes, total_bytes, speed_mbps, title="📥 Downloading"):
-    """Update progress bar real-time"""
+async def download_tiktok_audio(audio_url: str) -> str:
+    """Download TikTok audio dengan retry"""
     try:
-        if total_bytes == 0:
-            return
+        temp_file = f"tiktok_audio_{uuid.uuid4()}.mp3"
         
-        percentage = int((current_bytes / total_bytes) * 100)
-        bar_length = 20
-        filled = int(bar_length * percentage / 100)
-        bar = "█" * filled + "░" * (bar_length - filled)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
         
-        if speed_mbps > 0:
-            remaining_mb = (total_bytes - current_bytes) / (1024 * 1024)
-            eta_sec = int(remaining_mb / speed_mbps)
-        else:
-            eta_sec = 0
-        
-        current_mb = current_bytes / (1024 * 1024)
-        total_mb = total_bytes / (1024 * 1024)
-        
-        text = (
-            f"{title}\n"
-            f"[{bar}] {percentage}%\n"
-            f"⏱️ ETA: {eta_sec}s | ↓ {speed_mbps:.2f} MB/s | 📊 {current_mb:.1f}/{total_mb:.1f} MB"
-        )
-        
-        await status_msg.edit_text(text, parse_mode=ParseMode.HTML)
+        async with httpx.AsyncClient(headers=headers, timeout=30.0) as client:
+            response = await client.get(audio_url)
+            if response.status_code == 200:
+                with open(temp_file, 'wb') as f:
+                    f.write(response.content)
+                return temp_file
+        return None
     except Exception as e:
-        logger.debug(f"Progress update error: {e}")
+        logger.error(f"[TIKTOK AUDIO] Error: {e}")
+        return None
 
-async def downloader_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Enhanced downloader with progress bar & error handling"""
+async def dl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Downloader command: /dl [link]"""
     
     msg = update.message
     if not context.args:
-        return await msg.reply_text("⚠️ <b>Usage:</b> <code>/download [link]</code>", parse_mode=ParseMode.HTML)
+        return await msg.reply_text(
+            "⚠️ <b>Usage:</b> <code>/dl [link]</code>\n\n"
+            "<b>Supported:</b> TikTok, Instagram, YouTube, Twitter, Facebook",
+            parse_mode=ParseMode.HTML
+        )
 
     url = context.args[0].strip()
 
+    # Validate URL
     if not url.startswith(("http://", "https://", "www.")):
         return await msg.reply_text("❌ <b>Invalid URL.</b> Check format.", parse_mode=ParseMode.HTML)
 
@@ -2367,141 +1355,134 @@ async def downloader_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_VIDEO)
 
-    # Cache check
+    # ==========================================
+    # 1️⃣ CACHE CHECK
+    # ==========================================
     try:
-        cached = await get_cached_media(url)
-        if cached:
-            file_id, m_type = cached
+        cached = await get_media_cache(url)
+        if cached and cached.get("cached"):
+            file_id = cached.get("file_id")
+            m_type = cached.get("media_type", "video")
+            
             caption = "✅ <b>Cached Delivery (Instant)</b>\n⚡ <i>Powered by Oktacomel</i>"
-            if m_type == "video":
-                await msg.reply_video(file_id, caption=caption, parse_mode=ParseMode.HTML)
-            elif m_type == "audio":
-                await msg.reply_audio(file_id, caption=caption, parse_mode=ParseMode.HTML)
-            return
+            
+            try:
+                if m_type == "video":
+                    await msg.reply_video(file_id, caption=caption, parse_mode=ParseMode.HTML)
+                elif m_type == "audio":
+                    await msg.reply_audio(file_id, caption=caption, parse_mode=ParseMode.HTML)
+                elif m_type == "photo":
+                    await msg.reply_photo(file_id, caption=caption, parse_mode=ParseMode.HTML)
+                logger.info(f"[CACHE HIT] {url}")
+                return
+            except Exception as e:
+                logger.debug(f"[CACHE SEND] Error: {e}")
     except Exception as e:
-        logger.debug(f"[CACHE] error: {e}")
+        logger.debug(f"[CACHE] Error: {e}")
 
-    status_msg = await msg.reply_text("⏳ <b>Processing Request...</b>\n<i>Analyzing media source...</i>", parse_mode=ParseMode.HTML)
+    status_msg = await msg.reply_text(
+        "⏳ <b>Processing Request...</b>\n"
+        "<i>Analyzing media source...</i>",
+        parse_mode=ParseMode.HTML
+    )
 
     # ==========================================
-    # 1. TIKTOK ENGINE (STABLE)
+    # 2️⃣ TIKTOK ENGINE (API - KHUSUS)
     # ==========================================
     if "tiktok.com" in url:
         try:
-            await status_msg.edit_text("📥 <b>Downloading TikTok...</b>\n<i>Fetching video...</i>", parse_mode=ParseMode.HTML)
+            await status_msg.edit_text(
+                "🎥 <b>TikTok Detected</b>\n"
+                "📥 <b>Downloading...</b>\n"
+                "<i>Please wait...</i>",
+                parse_mode=ParseMode.HTML
+            )
             
             async with httpx.AsyncClient(timeout=15.0) as client:
                 r = await client.get(f"https://www.tikwm.com/api/?url={url}")
                 data = r.json()
             
             if data and data.get("code") == 0:
-                d = data["data"]
+                d = data.get("data", {})
+                
                 caption = (
                     f"🎥 <b>OKTACOMEL TIKTOK</b>\n"
                     f"━━━━━━━━━━━━━━━━━━\n"
-                    f"👤 <b>Author:</b> {html.escape(d['author']['nickname'])}\n"
+                    f"👤 <b>Author:</b> {html.escape(d.get('author', {}).get('nickname', 'Unknown'))}\n"
                     f"📝 <b>Desc:</b> {html.escape(d.get('title', '')[:100])}\n"
                     f"⚡ <i>Powered by Oktacomel</i>"
                 )
+                
                 await status_msg.delete()
 
-                if d.get("images"):
-                    media_group = []
-                    for i, img in enumerate(d["images"][:10]):
-                        cap = caption if i == 0 else None
-                        media_group.append(InputMediaPhoto(img, caption=cap, parse_mode=ParseMode.HTML))
-                    await msg.reply_media_group(media_group)
-                else:
-                    v = await msg.reply_video(d["play"], caption=caption, parse_mode=ParseMode.HTML)
-                    await save_media_cache(url, v.video.file_id, "video")
-                
+                # ✅ SEND VIDEO
+                if d.get("play"):
+                    try:
+                        v = await msg.reply_video(d["play"], caption=caption, parse_mode=ParseMode.HTML)
+                        await save_media_cache(url, v.video.file_id, "video")
+                        logger.info(f"[TIKTOK] Video sent: {url}")
+                    except Exception as e:
+                        logger.error(f"[TIKTOK VIDEO] Error: {e}")
+
+                # ✅ SEND AUDIO
                 if d.get("music"):
                     try:
-                        await msg.reply_audio(d["music"], caption="🎵 Original Sound", parse_mode=ParseMode.HTML)
-                    except:
-                        pass
-                return
-        except Exception as e:
-            logger.error(f"[TIKTOK] error: {e}")
-            await status_msg.edit_text(f"❌ TikTok Error: {str(e)[:50]}", parse_mode=ParseMode.HTML)
-
-    # ==========================================
-    # 2. INSTAGRAM ENGINE (POSTS, REELS, STORIES)
-    # ==========================================
-    if "instagram.com" in url:
-        await status_msg.edit_text("📸 <b>Instagram detected.</b>\n<i>Analyzing content type...</i>", parse_mode=ParseMode.HTML)
-        
-        if "/reel/" in url:
-            content_type = "🎬 REEL"
-        elif "/stories/" in url:
-            content_type = "📖 STORY"
-        elif "/p/" in url:
-            content_type = "📸 POST"
-        else:
-            content_type = "📸 CONTENT"
-        
-        instagram_apis = [
-            lambda u: fetch_json(f"https://ig.i.seg.in.net/?url={u}"),
-            lambda u: fetch_json(f"https://instagram-api.com/v1/download?url={u}"),
-            lambda u: fetch_json(f"https://insta.d.solankan.com/api/?url={u}"),
-        ]
-        
-        ig_success = False
-        for api_func in instagram_apis:
-            try:
-                await status_msg.edit_text(f"📸 <b>Fetching {content_type}...</b>\n<i>Please wait...</i>", parse_mode=ParseMode.HTML)
+                        audio_file = await download_tiktok_audio(d["music"])
+                        
+                        if audio_file and os.path.exists(audio_file):
+                            with open(audio_file, 'rb') as af:
+                                a = await msg.reply_audio(af, caption="🎵 Original Sound", parse_mode=ParseMode.HTML)
+                                await save_media_cache(f"{url}_audio", a.audio.file_id, "audio")
+                                logger.info(f"[TIKTOK] Audio sent: {url}")
+                            
+                            try:
+                                os.remove(audio_file)
+                            except:
+                                pass
+                    except Exception as e:
+                        logger.error(f"[TIKTOK AUDIO] Error: {e}")
                 
-                data = await api_func(url)
-                if data and (data.get("media") or data.get("url") or data.get("download_url")):
-                    media_url = data.get("media") or data.get("url") or data.get("download_url")
-                    
-                    caption = (
-                        f"📸 <b>OKTACOMEL INSTAGRAM</b>\n"
-                        f"━━━━━━━━━━━━━━━━━━\n"
-                        f"📝 Type: {content_type}\n"
-                        f"⚡ <i>Powered by Oktacomel</i>"
-                    )
-                    
-                    try:
-                        await status_msg.edit_text(f"📥 <b>Downloading {content_type}...</b>\n<i>Sending file...</i>", parse_mode=ParseMode.HTML)
-                        v = await msg.reply_video(media_url, caption=caption, parse_mode=ParseMode.HTML)
-                        await save_media_cache(url, v.video.file_id, "video")
-                        ig_success = True
-                        break
-                    except:
-                        try:
-                            p = await msg.reply_photo(media_url, caption=caption, parse_mode=ParseMode.HTML)
-                            await save_media_cache(url, p.photo[-1].file_id, "photo")
-                            ig_success = True
-                            break
-                        except:
-                            pass
-            except Exception as e:
-                logger.debug(f"[IG API] error: {e}")
-                continue
-        
-        if ig_success:
-            await status_msg.delete()
+                return
+            else:
+                raise Exception("TikTok API error")
+                
+        except Exception as e:
+            logger.error(f"[TIKTOK] Error: {e}")
+            await status_msg.edit_text(
+                f"❌ <b>TikTok Error</b>\n\n"
+                f"<i>{str(e)[:80]}</i>\n\n"
+                f"Try again later.",
+                parse_mode=ParseMode.HTML
+            )
             return
-        else:
-            await status_msg.edit_text("⚠️ Instagram private/restricted, trying universal engine...", parse_mode=ParseMode.HTML)
 
     # ==========================================
-    # 3. YOUTUBE DURATION CHECK (REJECT > 1 JAM)
+    # 3️⃣ YOUTUBE DURATION CHECK
     # ==========================================
     if "youtube.com" in url or "youtu.be" in url:
         try:
-            await status_msg.edit_text("⏱️ <b>Checking video duration...</b>\n<i>Please wait...</i>", parse_mode=ParseMode.HTML)
+            await status_msg.edit_text(
+                "⏱️ <b>Checking duration...</b>\n"
+                "<i>Please wait...</i>",
+                parse_mode=ParseMode.HTML
+            )
             
             loop = asyncio.get_running_loop()
             
-            with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
+            ydl_opts = {
+                "quiet": True,
+                "no_warnings": True,
+                "socket_timeout": 30,
+                "nocheckcertificate": True,
+            }
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
                 duration = info.get('duration', 0)
                 title = info.get('title', 'Video')
                 uploader = info.get('uploader', 'Unknown')
             
-            # Check durasi > 1 jam (3600 detik)
+            # Reject jika > 1 jam (3600 detik)
             if duration > 3600:
                 minutes = duration // 60
                 seconds = duration % 60
@@ -2510,175 +1491,177 @@ async def downloader_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     f"❌ <b>Video Terlalu Panjang!</b>\n\n"
                     f"📝 <b>Judul:</b> {html.escape(title[:60])}\n"
                     f"👤 <b>Channel:</b> {html.escape(uploader)}\n"
-                    f"⏱️ <b>Durasi:</b> {minutes}:{seconds:02d} (Lebih dari 60 menit)\n"
+                    f"⏱️ <b>Durasi:</b> {minutes}:{seconds:02d}\n"
                     f"📏 <b>Batas Maksimal:</b> 60 menit\n\n"
-                    f"<i>Silakan gunakan video yang lebih pendek.</i>",
+                    f"<i>Gunakan video yang lebih pendek.</i>",
                     parse_mode=ParseMode.HTML
                 )
                 return
-        
         except Exception as e:
             logger.debug(f"Duration check error: {e}")
-            # Lanjut ke download jika cek durasi gagal
 
     # ==========================================
-    # 4. UNIVERSAL ENGINE (YT-DLP)
+    # 4️⃣ UNIVERSAL ENGINE (YT-DLP)
     # ==========================================
-    if "youtube.com" in url or "youtu.be" in url or "instagram.com" in url or "facebook.com" in url or "x.com" in url or "twitter.com" in url:
-        try:
-            temp_dir = f"downloads_{uuid.uuid4()}"
-            os.makedirs(temp_dir, exist_ok=True)
+    try:
+        temp_dir = f"dl_{uuid.uuid4()}"
+        os.makedirs(temp_dir, exist_ok=True)
 
-            ydl_opts = {
-                "format": "best[ext=mp4]/best",
-                "outtmpl": f"{temp_dir}/%(title)s.%(ext)s",
-                "quiet": False,
-                "no_warnings": False,
-                "noplaylist": True,
-                "socket_timeout": 30,
-                "http_headers": {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-                    "Accept-Language": "en-US,en;q=0.5",
-                    "Referer": "https://www.google.com/",
-                    "DNT": "1",
-                    "Connection": "keep-alive",
-                    "Upgrade-Insecure-Requests": "1"
-                },
-                "nocheckcertificate": True,
-                "ignoreerrors": True,
-                "geo_bypass": True,
-                "geo_bypass_country": "US",
-                "extractor_retries": 5,
-                "retries": 3,
-                "fragment_retries": 5,
-                "skip_unavailable_fragments": True,
-                "instagram_flat_post_captions": True,
-                "facebook_prefer_https": True,
-            }
+        # Detect platform
+        if "instagram.com" in url:
+            platform, icon = "INSTAGRAM", "📸"
+        elif "youtube.com" in url or "youtu.be" in url:
+            platform, icon = "YOUTUBE", "📺"
+        elif "twitter.com" in url or "x.com" in url:
+            platform, icon = "X/TWITTER", "🐦"
+        elif "facebook.com" in url:
+            platform, icon = "FACEBOOK", "📘"
+        else:
+            platform, icon = "UNIVERSAL", "📁"
+
+        await status_msg.edit_text(
+            f"{icon} <b>{platform}</b>\n"
+            f"📥 <b>Downloading...</b>\n"
+            f"<i>Please wait...</i>",
+            parse_mode=ParseMode.HTML
+        )
+
+        ydl_opts = {
+            "format": "best[ext=mp4]/best[ext=mkv]/best[height<=720]/best",
+            "outtmpl": f"{temp_dir}/%(title)s.%(ext)s",
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "socket_timeout": 30,
+            "http_headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            },
+            "nocheckcertificate": True,
+            "ignoreerrors": False,
+            "geo_bypass": True,
+            "geo_bypass_country": "US",
+            "extractor_retries": 3,
+            "retries": 3,
+        }
+
+        loop = asyncio.get_running_loop()
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=True))
+
+            if not info:
+                raise Exception("Extraction failed")
+
+            video_title = info.get("title", "Media")
+            uploader = info.get("uploader", "Unknown")
             
-            loop = asyncio.get_running_loop()
+            files = [os.path.join(temp_dir, f) for f in os.listdir(temp_dir) if os.path.isfile(os.path.join(temp_dir, f))]
             
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    await status_msg.edit_text("📥 <b>Downloading...</b>\n<i>Processing video...</i>", parse_mode=ParseMode.HTML)
-                    
-                    info = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=True))
-                    
-                    if info and "entries" in info:
-                        info = info["entries"][0]
+            if not files:
+                raise Exception("No files downloaded")
 
-                    if not info:
-                        for key, msg_text in ERROR_MESSAGES.items():
-                            if key.lower() in str(info).lower():
-                                await status_msg.edit_text(f"❌ {msg_text}", parse_mode=ParseMode.HTML)
-                                return
-                        raise Exception("Extraction failed.")
+            # ==========================================
+            # 5️⃣ SEND FILES
+            # ==========================================
+            caption_base = (
+                f"{icon} <b>OKTACOMEL {platform}</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"📝 <b>Title:</b> {html.escape(str(video_title)[:80])}\n"
+                f"👤 <b>By:</b> {html.escape(str(uploader)[:50])}\n"
+                f"⚡ <i>Powered by Oktacomel</i>"
+            )
 
-                    video_title = info.get("title", "Media Content")
-                    uploader = info.get("uploader", "Unknown")
-                    
-                    if "instagram.com" in url:
-                        if "/reel/" in url:
-                            platform, icon = "INSTAGRAM REEL", "🎬"
-                        elif "/stories/" in url:
-                            platform, icon = "INSTAGRAM STORY", "📖"
-                        else:
-                            platform, icon = "INSTAGRAM POST", "📸"
-                    elif "youtube.com" in url or "youtu.be" in url:
-                        platform, icon = "YOUTUBE", "📺"
-                    elif "twitter.com" in url or "x.com" in url:
-                        platform, icon = "X/TWITTER", "🐦"
-                    elif "facebook.com" in url:
-                        platform, icon = "FACEBOOK", "📘"
-                    else:
-                        platform, icon = "UNIVERSAL", "📁"
+            await status_msg.edit_text(
+                f"{icon} <b>{platform}</b>\n"
+                f"📤 <b>Sending...</b>\n"
+                f"<i>Uploading {len(files)} file(s)...</i>",
+                parse_mode=ParseMode.HTML
+            )
 
-                    files = [os.path.join(temp_dir, f) for f in os.listdir(temp_dir)]
-                    if not files:
-                        raise Exception("File not found.")
+            sent_count = 0
+            for i, f_path in enumerate(files[:10]):  # Max 10 files
+                ext = f_path.split(".")[-1].lower()
+                cap = caption_base if i == 0 else None
 
-                    caption_base = (
-                        f"{icon} <b>OKTACOMEL {platform}</b>\n"
-                        f"━━━━━━━━━━━━━━━━━━\n"
-                        f"📝 <b>Title:</b> {html.escape(str(video_title)[:80])}\n"
-                        f"👤 <b>By:</b> {html.escape(str(uploader))}\n"
-                        f"⚡ <i>Powered by Oktacomel</i>"
-                    )
+                try:
+                    if ext in ["mp4", "mkv", "mov", "webm", "avi", "flv"]:
+                        with open(f_path, "rb") as fp:
+                            v = await msg.reply_video(video=fp, caption=cap, parse_mode=ParseMode.HTML)
+                            if i == 0:
+                                await save_media_cache(url, v.video.file_id, "video")
+                        sent_count += 1
+                        logger.info(f"[DL] Video sent: {platform}")
 
-                    sent_count = 0
-                    for f_path in files:
-                        ext = f_path.split(".")[-1].lower()
-                        cap = caption_base if sent_count == 0 else None
-                        
-                        try:
-                            if ext in ["jpg", "jpeg", "png", "webp"]:
-                                await msg.reply_photo(photo=open(f_path, "rb"), caption=cap, parse_mode=ParseMode.HTML)
-                            elif ext in ["mp4", "mkv", "mov", "webm", "avi"]:
-                                v = await msg.reply_video(video=open(f_path, "rb"), caption=cap, parse_mode=ParseMode.HTML)
-                                if sent_count == 0:
-                                    await save_media_cache(url, v.video.file_id, "video")
-                            elif ext in ["mp3", "m4a", "wav"]:
-                                await msg.reply_audio(audio=open(f_path, "rb"), caption=cap, parse_mode=ParseMode.HTML)
-                            sent_count += 1
-                        except Exception as ex:
-                            logger.error(f"Send Error: {ex}")
-                        finally:
-                            try:
-                                os.remove(f_path)
-                            except:
-                                pass
+                    elif ext in ["mp3", "m4a", "wav", "aac", "flac"]:
+                        with open(f_path, "rb") as fp:
+                            a = await msg.reply_audio(audio=fp, caption=cap, parse_mode=ParseMode.HTML)
+                            if i == 0:
+                                await save_media_cache(url, a.audio.file_id, "audio")
+                        sent_count += 1
+                        logger.info(f"[DL] Audio sent: {platform}")
 
+                    elif ext in ["jpg", "jpeg", "png", "webp", "gif"]:
+                        with open(f_path, "rb") as fp:
+                            p = await msg.reply_photo(photo=fp, caption=cap, parse_mode=ParseMode.HTML)
+                            if i == 0:
+                                await save_media_cache(url, p.photo[-1].file_id, "photo")
+                        sent_count += 1
+                        logger.info(f"[DL] Photo sent: {platform}")
+
+                except Exception as ex:
+                    logger.error(f"[SEND {i}] Error: {ex}")
+                    continue
+
+                finally:
                     try:
-                        os.rmdir(temp_dir)
+                        os.remove(f_path)
                     except:
                         pass
-                    
-                    await status_msg.delete()
-                    return
 
-            except yt_dlp.utils.DownloadError as e:
-                error_str = str(e).lower()
-                error_found = False
-                
-                for key, msg_text in ERROR_MESSAGES.items():
-                    if key.lower() in error_str:
-                        await status_msg.edit_text(f"❌ {msg_text}", parse_mode=ParseMode.HTML)
-                        error_found = True
-                        break
-                
-                if not error_found:
-                    await status_msg.edit_text(
-                        "❌ <b>Download Failed</b>\n\n"
-                        "Possible causes:\n"
-                        "• Private/Restricted Content\n"
-                        "• Video Deleted\n"
-                        "• Geo-Blocked\n"
-                        "• Server Rate Limited\n\n"
-                        "Try again in 5 minutes.",
-                        parse_mode=ParseMode.HTML
-                    )
-            except Exception as e:
-                logger.error(f"Download Error: {e}")
-                try:
-                    shutil.rmtree(temp_dir)
-                except:
-                    pass
+            # Cleanup
+            try:
+                os.rmdir(temp_dir)
+            except:
+                pass
 
-        except Exception as e:
-            logger.error(f"General Error: {e}")
+            if sent_count > 0:
+                await status_msg.delete()
+                logger.info(f"[SUCCESS] Downloaded {sent_count} file(s) from {platform}")
+                return
 
-    await status_msg.edit_text(
-        "❌ <b>Download Failed</b>\n\n"
-        "Possible causes:\n"
-        "1️⃣ Private Account/Content\n"
-        "2️⃣ Geo-Restricted\n"
-        "3️⃣ Server IP Blocked\n"
-        "4️⃣ Video Deleted/Age Restricted\n"
-        "5️⃣ Format Not Supported\n\n"
-        "<i>Try again later or use a different link.</i>",
-        parse_mode=ParseMode.HTML
-    )
+    except yt_dlp.utils.DownloadError as e:
+        error_str = str(e).lower()
+        
+        for key, msg_text in ERROR_MESSAGES.items():
+            if key.lower() in error_str:
+                await status_msg.edit_text(f"❌ {msg_text}", parse_mode=ParseMode.HTML)
+                return
+
+        await status_msg.edit_text(
+            "❌ <b>Download Failed</b>\n\n"
+            "Possible causes:\n"
+            "• Private/Restricted Content\n"
+            "• Video Deleted\n"
+            "• Geo-Blocked\n"
+            "• Server Rate Limited\n\n"
+            "Try again in 5 minutes.",
+            parse_mode=ParseMode.HTML
+        )
+
+    except Exception as e:
+        logger.error(f"[DL] Error: {e}")
+        try:
+            shutil.rmtree(temp_dir)
+        except:
+            pass
+
+        await status_msg.edit_text(
+            f"❌ <b>Download Failed</b>\n\n"
+            f"Error: <code>{str(e)[:80]}</code>\n\n"
+            f"Try another link.",
+            parse_mode=ParseMode.HTML
+        )
 # ==========================================
 # 👤 PROFILE (/ME) - ULTIMATE PREMIUM
 # ==========================================
@@ -8252,7 +7235,7 @@ async def userinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     caller_id = update.effective_user.id
     
-    if caller_id != config.OWNER_ID:
+    if caller_id != OWNER_ID:  # ✅ GANTI config.OWNER_ID
         await msg.reply_text(
             "⛔ <b>ACCESS DENIED.</b>\n"
             "Administrative privileges required.",
@@ -8314,7 +7297,7 @@ async def userinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     db_data = await user_cache.get(target_id)
     
-    is_owner = (target_id == config.OWNER_ID)
+    is_owner = (target_id == OWNER_ID)  # ✅ GANTI config.OWNER_ID
     rank = get_rank(is_owner, db_data["is_prem"], db_data["is_sub"])
     
     error_rate = ((db_data["error_count"] / db_data["activity_count"]) * 100) if db_data["activity_count"] > 0 else 0
@@ -8456,7 +7439,7 @@ async def userinfo_close_callback(update: Update, context: ContextTypes.DEFAULT_
     q = update.callback_query
     await q.message.delete()
     await q.answer("Closed", show_alert=False)
-
+    
 # ==========================================
 # 🔧 /setproxy — Ganti Proxy via Telegram (Owner Only)
 # ==========================================
@@ -8921,7 +7904,7 @@ async def jeni_auto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     caller_id = msg.from_user.id
     
     # Owner only check (opsional):
-    if caller_id != config.OWNER_ID:
+    if caller_id != OWNER_ID:  # ✅ GANTI
         await msg.reply_text("⛔ Owner only!")
         return
     
@@ -8962,7 +7945,7 @@ async def jeni_auto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update_bar(20 + (attempt * 5), f"Forging Identity ({attempt}/{max_retries})...", logs_attempt)
                 
                 # A. GENERATE EMAIL
-                mail_headers = {"X-API-Key": config.TEMPMAIL_API_KEY}
+                mail_headers = {"X-API-Key": TEMPMAIL_API_KEY}  # ✅ GANTI
                 resp_mail = await client.post(
                     "https://api.temp-mail.io/v1/emails",
                     headers=mail_headers,
@@ -8980,7 +7963,7 @@ async def jeni_auto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update_bar(40 + (attempt * 5), "Injecting Payload...", 
                                f"> Testing Domain: {current_email.split('@')[1]}\n> Target: accounts:signUp")
                 
-                signup_url = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={config.FIREBASE_API_KEY}"
+                signup_url = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={FIREBASE_API_KEY}"  # ✅ GANTI
                 signup_payload = {"email": current_email, "password": password, "returnSecureToken": True}
                 
                 reg_resp = await client.post(signup_url, json=signup_payload)
@@ -9002,7 +7985,7 @@ async def jeni_auto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             # TRIGGER VERIFIKASI
             await update_bar(65, "Account Created.", f"> Valid Email: {email}\n> Triggering Verification...")
-            verify_url = f"https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key={config.FIREBASE_API_KEY}"
+            verify_url = f"https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key={FIREBASE_API_KEY}"  # ✅ GANTI
             await client.post(verify_url, json={"requestType": "VERIFY_EMAIL", "idToken": id_token})
 
             # SCAN EMAIL
@@ -9032,13 +8015,14 @@ async def jeni_auto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update_bar(95, "Link Found.", "> Executing Auto-Click...")
             await client.get(final_link)
             
-            # ✅ SAVE TO DATABASE
+            # ✅ SAVE TO DATABASE (ASYNC VERSION)
             try:
-                cursor.execute("""
-                    INSERT INTO accounts (email, password, plan, status, created_at)
-                    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-                """, (email, password, "Monthly", "AVAILABLE"))
-                conn.commit()
+                await db_insert("accounts", {  # ✅ GANTI DARI cursor → async db_insert
+                    "email": email,
+                    "password": password,
+                    "plan": "Monthly",
+                    "status": "AVAILABLE"
+                })
                 logger.info(f"[JENI] Account saved: {email}")
             except Exception as db_err:
                 logger.error(f"[JENI] DB error: {db_err}")
@@ -9063,17 +8047,23 @@ async def jeni_auto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 🚀 BAGIAN 1: FITUR UPGRADE JENNI.AI (FACTORY)
 # ==============================================================================
 
-# --- START COMMAND (/upgrade) ---
 async def start_upgrade_factory(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_ID: return
+    if update.effective_user.id != OWNER_ID:
+        return
 
     if not context.args:
-        await update.message.reply_text("⚠️ <b>Format:</b>\n<code>/upgrade email|password</code>", parse_mode="HTML")
+        await update.message.reply_text(
+            "⚠️ <b>Format:</b>\n<code>/upgrade email|password</code>", 
+            parse_mode=ParseMode.HTML
+        )
         return ConversationHandler.END
 
     raw = " ".join(context.args)
     if "|" not in raw:
-        await update.message.reply_text("❌ <b>Format Salah:</b>\nPakai pemisah | (garis lurus)", parse_mode="HTML")
+        await update.message.reply_text(
+            "❌ <b>Format Salah:</b>\nPakai pemisah | (garis lurus)", 
+            parse_mode=ParseMode.HTML
+        )
         return ConversationHandler.END
 
     email, password = raw.split("|", 1)
@@ -9087,8 +8077,14 @@ async def start_upgrade_factory(update: Update, context: ContextTypes.DEFAULT_TY
         [InlineKeyboardButton("📅 MONTHLY (Rp 250k)", callback_data="plan_monthly")],
         [InlineKeyboardButton("🗓️ YEARLY (Rp 1jt)", callback_data="plan_yearly")]
     ]
-    await update.message.reply_text("🏭 <b>PILIH PAKET UPGRADE:</b>", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
-    return INPUT_CARD
+    
+    await update.message.reply_text(
+        "🏭 <b>PILIH PAKET UPGRADE:</b>", 
+        reply_markup=InlineKeyboardMarkup(keyboard), 
+        parse_mode=ParseMode.HTML
+    )
+    
+    return INPUT_CARD  # ✅ GUNAKAN YANG SUDAH ADA (= 2)
 
 # ==============================================================================
 # 🛠️ BAGIAN 2: KONFIGURASI BROWSER & POOL
@@ -9339,48 +8335,48 @@ CONFIRM_CARD = 4
 async def log_transaction(action: str, plan: str, user_id: int, status: str):
     """Log semua transaksi"""
     try:
-        cursor.execute("""
-            INSERT INTO transaction_logs (action, plan, user_id, status)
-            VALUES (?, ?, ?, ?)
-        """, (action, plan, user_id, status))
-        conn.commit()
+        await db_insert("transaction_logs", {  # ✅ GANTI cursor
+            "action": action,
+            "plan": plan,
+            "user_id": user_id,
+            "status": status
+        })
     except Exception as e:
         logger.error(f"Log transaction error: {e}")
 
 async def check_pending_order(user_id: int) -> bool:
     """Check apakah user punya order pending"""
     try:
-        cursor.execute(
+        result = await db_fetch_one(  # ✅ GANTI cursor
             "SELECT id FROM orders WHERE user_id=? AND status='pending'",
             (user_id,)
         )
-        return bool(cursor.fetchone())
+        return bool(result)
     except:
         return False
 
 async def check_stock_availability(plan: str) -> int:
     """Cek stok berdasarkan plan"""
     try:
-        cursor.execute(
+        result = await db_fetch_one(  # ✅ GANTI cursor
             "SELECT COUNT(*) FROM accounts WHERE status='AVAILABLE' AND plan LIKE ?",
             (f"%{plan}%",)
         )
-        return cursor.fetchone()[0]
+        return result[0] if result else 0  # ✅ GANTI
     except:
         return 0
 
 async def get_available_account(plan: str) -> tuple:
     """Ambil 1 akun dari gudang"""
     try:
-        cursor.execute(
+        return await db_fetch_one(  # ✅ GANTI cursor
             "SELECT id, email, password FROM accounts WHERE status='AVAILABLE' AND plan LIKE ? LIMIT 1",
             (f"%{plan}%",)
         )
-        return cursor.fetchone()
     except:
         return None
 
-def get_price_for_plan(plan: str) -> str:
+async def get_price_for_plan(plan: str) -> str:  # ✅ TAMBAH async
     """Get harga untuk plan"""
     prices = {
         "Monthly": "Rp 25.000",
@@ -9427,10 +8423,9 @@ def get_stock_status(count: int) -> str:
 async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show gudang akun dengan detail"""
     try:
-        cursor.execute(
+        rows = await db_fetch_all(  # ✅ GANTI cursor
             "SELECT plan, COUNT(*) FROM accounts WHERE status='AVAILABLE' GROUP BY plan"
         )
-        rows = cursor.fetchall()
         
         msg = (
             "╔════════════════════════════╗\n"
@@ -9460,154 +8455,6 @@ async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"❌ Error: {str(e)[:50]}",
             parse_mode="HTML"
         )
-
-# ==========================================
-# 🛒 BELI START FLOW (IMPROVED)
-# ==========================================
-
-async def beli_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start pembelian dengan validasi"""
-    user_id = update.effective_user.id
-    
-    try:
-        has_pending = await check_pending_order(user_id)
-        if has_pending:
-            await update.message.reply_text(
-                "⚠️ <b>ANDA MASIH PUNYA ORDER PENDING!</b>\n\n"
-                "Tunggu admin ACC dulu sebelum beli lagi.\n"
-                "Estimasi: 1-5 menit.\n\n"
-                "Ketik /sts untuk cek status order Anda.",
-                parse_mode="HTML"
-            )
-            return ConversationHandler.END
-        
-        keyboard = []
-        
-        monthly_stock = await check_stock_availability("Monthly")
-        monthly_btn = InlineKeyboardButton(
-            f"📅 MONTHLY - Rp 25.000 ({monthly_stock} stok)",
-            callback_data="buy_Monthly"
-        ) if monthly_stock > 0 else InlineKeyboardButton(
-            "📅 MONTHLY - HABIS",
-            callback_data="out_of_stock"
-        )
-        keyboard.append([monthly_btn])
-        
-        yearly_stock = await check_stock_availability("Yearly")
-        yearly_btn = InlineKeyboardButton(
-            f"🗓️ YEARLY - Rp 150.000 ({yearly_stock} stok)",
-            callback_data="buy_Yearly"
-        ) if yearly_stock > 0 else InlineKeyboardButton(
-            "🗓️ YEARLY - HABIS",
-            callback_data="out_of_stock"
-        )
-        keyboard.append([yearly_btn])
-        
-        keyboard.append([InlineKeyboardButton("❌ Batal", callback_data="buy_cancel")])
-        
-        await update.message.reply_text(
-            "╔════════════════════════════╗\n"
-            "║   🛒 MENU PEMBELIAN JENNI  ║\n"
-            "╚════════════════════════════╝\n\n"
-            "Silakan pilih paket yang mau dibeli:\n\n"
-            "💡 <i>Pembayaran via QRIS (instant)</i>",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="HTML"
-        )
-        return WAIT_PROOF
-    
-    except Exception as e:
-        logger.error(f"Beli start error: {e}")
-        await update.message.reply_text(
-            f"❌ Error: {str(e)[:50]}",
-            parse_mode="HTML"
-        )
-        return ConversationHandler.END
-
-# ==========================================
-# 💳 BUY MENU CALLBACK (IMPROVED)
-# ==========================================
-
-async def buy_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Process pemilihan plan dengan safety checks"""
-    query = update.callback_query
-    user = query.from_user
-    user_id = user.id
-    
-    try:
-        await query.answer()
-        
-        if query.data == "buy_cancel":
-            await query.message.edit_text("❌ Transaksi dibatalkan.")
-            return ConversationHandler.END
-        
-        if query.data == "out_of_stock":
-            await query.answer("⚠️ Stok habis, silakan pilih paket lain!", show_alert=True)
-            return WAIT_PROOF
-        
-        plan_dipilih = query.data.split("_")[1]
-        
-        stok = await check_stock_availability(plan_dipilih)
-        
-        if stok == 0:
-            await query.message.edit_text(
-                f"❌ <b>MAAF KAK, STOK {plan_dipilih.upper()} HABIS!</b>\n\n"
-                "Jangan transfer dulu ya. Stok baru akan masuk dalam waktu dekat.\n"
-                "Silakan cek /stock lagi nanti.",
-                parse_mode="HTML"
-            )
-            return ConversationHandler.END
-        
-        harga = get_price_for_plan(plan_dipilih)
-        context.user_data['plan_beli'] = plan_dipilih
-        context.user_data['harga_beli'] = harga
-        
-        try:
-            cursor.execute("""
-                INSERT INTO orders (user_id, plan, price, status)
-                VALUES (?, ?, ?, 'pending')
-            """, (user_id, plan_dipilih, harga))
-            conn.commit()
-        except Exception as e:
-            logger.error(f"Order insert error: {e}")
-        
-        try:
-            await query.message.reply_photo(
-                photo=config.QRIS_IMAGE,
-                caption=(
-                    f"╔════════════════════════════╗\n"
-                    f"║   💳 INVOICE PEMBAYARAN    ║\n"
-                    f"╚════════════════════════════╝\n\n"
-                    f"<b>Produk:</b> Jenni.ai {plan_dipilih}\n"
-                    f"<b>Harga :</b> {harga}\n"
-                    f"<b>Status:</b> ⏳ Menunggu pembayaran\n\n"
-                    f"📋 <b>CARA PEMBAYARAN:</b>\n"
-                    f"1️⃣ Scan QRIS di atas\n"
-                    f"2️⃣ Transfer <b>TEPAT</b> sesuai nominal\n"
-                    f"3️⃣ <b>KIRIM FOTO BUKTI</b> sekarang\n\n"
-                    f"⏰ <b>Batas waktu:</b> 30 menit\n"
-                    f"(Jika expired, silakan /beli lagi)\n\n"
-                    f"<i>Pembayaran instant ✓ Aman terpercaya ✓</i>"
-                ),
-                parse_mode="HTML"
-            )
-        except Exception as e:
-            logger.error(f"QRIS send error: {e}")
-            await query.message.reply_text(
-                f"❌ Error menampilkan QRIS: {e}\n"
-                f"Hubungi admin untuk bantuan.",
-                parse_mode="HTML"
-            )
-        
-        return WAIT_PROOF
-    
-    except Exception as e:
-        logger.error(f"Buy menu error: {e}")
-        await query.message.reply_text(
-            f"❌ Error: {str(e)[:50]}",
-            parse_mode="HTML"
-        )
-        return ConversationHandler.END
 
 # ==========================================
 # 📸 RECEIVE PROOF HANDLER (IMPROVED)
@@ -9649,12 +8496,13 @@ async def receive_proof_handler(update: Update, context: ContextTypes.DEFAULT_TY
             )
             return ConversationHandler.END
         
+        # ✅ GANTI cursor → db_update
         try:
-            cursor.execute(
-                "UPDATE orders SET proof_photo_id=? WHERE user_id=? AND status='pending' AND plan=?",
-                (photo_id, user_id, plan)
+            await db_update(
+                "orders",
+                {"proof_photo_id": photo_id},
+                {"user_id": user_id, "status": "pending", "plan": plan}
             )
-            conn.commit()
         except Exception as e:
             logger.error(f"Order update error: {e}")
         
@@ -9688,7 +8536,7 @@ async def receive_proof_handler(update: Update, context: ContextTypes.DEFAULT_TY
         
         try:
             await context.bot.send_photo(
-                chat_id=config.OWNER_ID,
+                chat_id=OWNER_ID,  # ✅ GANTI config.OWNER_ID
                 photo=photo_id,
                 caption=caption_admin,
                 reply_markup=InlineKeyboardMarkup(tombol_admin),
@@ -9719,7 +8567,7 @@ async def admin_approval_callback(update: Update, context: ContextTypes.DEFAULT_
     caller_id = query.from_user.id
     
     try:
-        if caller_id != config.OWNER_ID:
+        if caller_id != OWNER_ID:  # ✅ GANTI config.OWNER_ID
             await query.answer("⛔ Hanya owner yang bisa approve!", show_alert=True)
             return
         
@@ -9730,12 +8578,13 @@ async def admin_approval_callback(update: Update, context: ContextTypes.DEFAULT_
         buyer_id = int(data[1])
         
         if action == "reject":
+            # ✅ GANTI cursor → db_update
             try:
-                cursor.execute(
-                    "UPDATE orders SET status='rejected' WHERE user_id=?",
-                    (buyer_id,)
+                await db_update(
+                    "orders",
+                    {"status": "rejected"},
+                    {"user_id": buyer_id}
                 )
-                conn.commit()
             except:
                 pass
             
@@ -9780,7 +8629,7 @@ async def admin_approval_callback(update: Update, context: ContextTypes.DEFAULT_
             return
         
         if action == "confirm_final":
-            acc_data = await get_available_account(plan_beli)
+            acc_data = await get_available_account(plan_beli)  # ✅ Sudah pakai db_fetch_one
             
             if not acc_data:
                 await query.message.edit_caption(
@@ -9795,17 +8644,19 @@ async def admin_approval_callback(update: Update, context: ContextTypes.DEFAULT_
             
             acc_id, email, password = acc_data
             
-            cursor.execute(
-                "UPDATE accounts SET status='SOLD' WHERE id=?",
-                (acc_id,)
+            # ✅ GANTI cursor → db_update
+            await db_update(
+                "accounts",
+                {"status": "SOLD"},
+                {"id": acc_id}
             )
-            conn.commit()
             
-            cursor.execute(
-                "UPDATE orders SET status='approved', approved_at=CURRENT_TIMESTAMP WHERE user_id=? AND plan=?",
-                (buyer_id, plan_beli)
+            # ✅ GANTI cursor → db_update
+            await db_update(
+                "orders",
+                {"status": "approved", "approved_at": datetime.datetime.now().isoformat()},
+                {"user_id": buyer_id, "plan": plan_beli}
             )
-            conn.commit()
             
             trx_id = f"INV-{uuid.uuid4().hex[:6].upper()}"
             waktu = datetime.datetime.now(TZ).strftime("%d/%m/%Y %H:%M")
@@ -9871,14 +8722,13 @@ async def sts_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
     try:
-        cursor.execute("""
+        # ✅ GANTI cursor → db_fetch_one
+        order = await db_fetch_one("""
             SELECT plan, status, created_at FROM orders 
             WHERE user_id=? 
             ORDER BY created_at DESC 
             LIMIT 1
         """, (user_id,))
-        
-        order = cursor.fetchone()
         
         if not order:
             await update.message.reply_text(
@@ -9926,12 +8776,13 @@ async def sales_report_command(update: Update, context: ContextTypes.DEFAULT_TYP
     """Show sales report untuk owner"""
     caller_id = update.effective_user.id
     
-    if caller_id != config.OWNER_ID:
+    if caller_id != OWNER_ID:  # ✅ GANTI config.OWNER_ID
         await update.message.reply_text("⛔ Owner only!")
         return
     
     try:
-        cursor.execute("""
+        # ✅ GANTI cursor → db_fetch_all
+        today = await db_fetch_all("""
             SELECT plan, COUNT(*) as total, 
                    SUM(CASE WHEN status='approved' THEN 1 ELSE 0 END) as sold
             FROM orders
@@ -9939,13 +8790,13 @@ async def sales_report_command(update: Update, context: ContextTypes.DEFAULT_TYP
             GROUP BY plan
         """)
         
-        today = cursor.fetchall()
+        # ✅ GANTI cursor → db_fetch_one
+        all_time_sold_result = await db_fetch_one("SELECT COUNT(*) FROM orders WHERE status='approved'")
+        all_time_sold = all_time_sold_result[0] if all_time_sold_result else 0
         
-        cursor.execute("SELECT COUNT(*) FROM orders WHERE status='approved'")
-        all_time_sold = cursor.fetchone()[0]
-        
-        cursor.execute("SELECT COUNT(*) FROM orders WHERE status='pending'")
-        pending = cursor.fetchone()[0]
+        # ✅ GANTI cursor → db_fetch_one
+        pending_result = await db_fetch_one("SELECT COUNT(*) FROM orders WHERE status='pending'")
+        pending = pending_result[0] if pending_result else 0
         
         report = (
             "╔════════════════════════════╗\n"
@@ -9972,9 +8823,7 @@ async def sales_report_command(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception as e:
         logger.error(f"Sales report error: {e}")
         await update.message.reply_text(f"❌ Error: {str(e)[:50]}", parse_mode="HTML")
-        
 
-        
 # ==========================================
 # ❌ CANCEL OPERATION HANDLER
 # ==========================================
@@ -9991,7 +8840,6 @@ async def cancel_op(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Cancel operation error: {e}")
         return ConversationHandler.END
-
 
 # ==========================================
 # 🕌 JADWAL SHOLAT (PREMIUM ULTIMATE V4)
@@ -10935,8 +9783,8 @@ def main():
         entry_points=[CommandHandler("beli", beli_start)],
         states={
             WAIT_PROOF: [
-                CallbackQueryHandler(buy_menu_callback, pattern="^buy_"),
-                CallbackQueryHandler(buy_menu_callback, pattern="^out_of_stock"),
+                CallbackQueryHandler(beli_menu_callback, pattern="^beli_"),  # ✅ GANTI buy_menu_callback
+                CallbackQueryHandler(beli_menu_callback, pattern="^out_of_stock"),  # ✅ GANTI
                 MessageHandler(filters.PHOTO, receive_proof_handler)
             ]
         },
@@ -10980,7 +9828,7 @@ def main():
     app.add_handler(CommandHandler("berita", news_command))
 
     # --- Downloader ---
-    app.add_handler(CommandHandler("download", downloader_command))
+    app.add_handler(CommandHandler("dl", dl_command))
     app.add_handler(CommandHandler("gl", gallery_command))
     app.add_handler(CommandHandler("gallery", gallery_command))
 
@@ -11001,7 +9849,7 @@ def main():
     app.add_handler(CallbackQueryHandler(crypto_alert_handler, pattern=r"^alert\|"))
     app.add_handler(CommandHandler("sha", sha_command))
     app.add_handler(CallbackQueryHandler(sha_refresh_callback, pattern="^sha_refresh\\|"))
-    app.add_handler(CommandHandler("buy", buy_command))
+    app.add_handler(CommandHandler("buy", buy_command))  # ✅ /buy command (Premium plans)
 
     # --- Admin ---
     app.add_handler(CommandHandler("addprem", addprem_command))
@@ -11104,6 +9952,4 @@ def main():
 # 🔥 KUNCI KONTAK (NYALAKAN MESIN)
 # ==========================================
 if __name__ == "__main__":
-
     main()
-
