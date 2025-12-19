@@ -17,6 +17,7 @@ from bs4 import BeautifulSoup
 import random
 import string
 import json
+from functools import wraps  # ← HARUS ADA INI
 import html
 import re
 from functools import wraps
@@ -146,194 +147,79 @@ executor = ThreadPoolExecutor(max_workers=5)
 
 
 # ==========================================
-# 🗄️ DATABASE INITIALIZATION
+# 🚀 NETWORK & DB ENGINE
 # ==========================================
+async def fetch_json(url, method="GET", payload=None, headers=None):
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        try:
+            if method == "GET":
+                resp = await client.get(url, headers=headers)
+            else:
+                resp = await client.post(url, json=payload, headers=headers)
+            return resp.json()
+        except:
+            return None
 
-async def init_db():
-    """Initialize semua tables untuk Jenni Store"""
-    async with aiosqlite.connect(DB_NAME) as db:
-        
-        # ==========================================
-        # 🏪 TABEL AKUN JENNI (PABRIK OTOMATIS)
-        # ==========================================
-        
-        await db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS accounts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                email TEXT UNIQUE NOT NULL,
-                password TEXT NOT NULL,
-                plan TEXT NOT NULL,
-                status TEXT DEFAULT 'AVAILABLE',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
+# ✅ DB HELPERS (HARUS ADA DULU)
+async def db_execute(query, params=()):
+    """Execute query tanpa return"""
+    try:
+        async with aiosqlite.connect(DB_NAME) as db:
+            await db.execute(query, params)
+            await db.commit()
+        return True
+    except Exception as e:
+        logger.error(f"[DB_EXECUTE] Error: {str(e)}")
+        return False
 
-        # ==========================================
-        # 📦 TABEL ORDERS (PESANAN PEMBELI)
-        # ==========================================
-        
-        await db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS orders (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                plan TEXT NOT NULL,
-                price TEXT NOT NULL,
-                status TEXT DEFAULT 'pending',
-                proof_photo_id TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                approved_at TIMESTAMP
-            )
-            """
-        )
+async def db_fetch_one(query, params=()):
+    """Fetch 1 row"""
+    try:
+        async with aiosqlite.connect(DB_NAME) as db:
+            cursor = await db.execute(query, params)
+            return await cursor.fetchone()
+    except Exception as e:
+        logger.error(f"[DB_FETCH_ONE] Error: {str(e)}")
+        return None
 
-        # ==========================================
-        # 📝 TABEL TRANSACTION LOGS (AUDIT TRAIL)
-        # ==========================================
-        
-        await db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS transaction_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                action TEXT NOT NULL,
-                plan TEXT,
-                user_id INTEGER,
-                status TEXT,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
+async def db_fetch_all(query, params=()):
+    """Fetch semua rows"""
+    try:
+        async with aiosqlite.connect(DB_NAME) as db:
+            cursor = await db.execute(query, params)
+            return await cursor.fetchall()
+    except Exception as e:
+        logger.error(f"[DB_FETCH_ALL] Error: {str(e)}")
+        return []
 
-        # ==========================================
-        # ⭐ TABEL RATINGS (RATING DARI PEMBELI)
-        # ==========================================
-        
-        await db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS ratings (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                order_id INTEGER,
-                rating INTEGER,
-                comment TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
+async def db_insert(table, data):
+    """Insert data ke table"""
+    try:
+        columns = ", ".join(data.keys())
+        placeholders = ", ".join(["?" for _ in data])
+        query = f"INSERT INTO {table} ({columns}) VALUES ({placeholders})"
+        async with aiosqlite.connect(DB_NAME) as db:
+            await db.execute(query, tuple(data.values()))
+            await db.commit()
+        return True
+    except Exception as e:
+        logger.error(f"[DB_INSERT] Error: {str(e)}")
+        return False
 
-        # ==========================================
-        # 🔐 TABEL SCRAPER LOGS (LOG AKTIVITAS)
-        # ==========================================
-        
-        await db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS scraper_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                chat_id INTEGER,
-                chat_type TEXT,
-                action TEXT,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-
-        # ==========================================
-        # 📊 USER ACTIONS TABLE (ANALYTICS & TRACKING)
-        # ==========================================
-        
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS user_actions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                action TEXT NOT NULL,
-                details TEXT,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        
-        # Create indexes
-        await db.execute("""
-            CREATE INDEX IF NOT EXISTS idx_user_actions_user_id 
-            ON user_actions(user_id)
-        """)
-        
-        await db.execute("""
-            CREATE INDEX IF NOT EXISTS idx_user_actions_timestamp 
-            ON user_actions(timestamp)
-        """)
-
-        # ==========================================
-        # 👥 SUBSCRIBER TABLES
-        # ==========================================
-        
-        await db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS subscribers (
-                user_id INTEGER PRIMARY KEY
-            )
-            """
-        )
-
-        # ==========================================
-        # 💎 PREMIUM USERS TABLE
-        # ==========================================
-        
-        await db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS premium_users (
-                user_id INTEGER PRIMARY KEY
-            )
-            """
-        )
-
-        # ==========================================
-        # 📝 USER NOTES TABLE
-        # ==========================================
-        
-        await db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS user_notes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                content TEXT,
-                date_added TEXT
-            )
-            """
-        )
-
-        # ==========================================
-        # 🕌 PRAYER NOTIFICATIONS TABLE
-        # ==========================================
-        
-        await db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS prayer_subs (
-                chat_id INTEGER PRIMARY KEY,
-                city TEXT
-            )
-            """
-        )
-
-        # ==========================================
-        # 💾 MEDIA CACHE TABLE
-        # ==========================================
-        
-        await db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS media_cache (
-                url TEXT PRIMARY KEY,
-                file_id TEXT,
-                media_type TEXT,
-                timestamp REAL
-            )
-            """
-        )
-
-        await db.commit()
-        print("✅ Database Initialized (termasuk store system tables)")
+async def db_update(table, data, where):
+    """Update data di table"""
+    try:
+        set_clause = ", ".join([f"{k}=?" for k in data.keys()])
+        where_clause = " AND ".join([f"{k}=?" for k in where.keys()])
+        query = f"UPDATE {table} SET {set_clause} WHERE {where_clause}"
+        params = tuple(data.values()) + tuple(where.values())
+        async with aiosqlite.connect(DB_NAME) as db:
+            await db.execute(query, params)
+            await db.commit()
+        return True
+    except Exception as e:
+        logger.error(f"[DB_UPDATE] Error: {str(e)}")
+        return False
 
 # ==========================================
 # 💾 MEDIA CACHE FUNCTIONS
@@ -342,12 +228,12 @@ async def init_db():
 async def save_media_cache(url: str, file_id: str, media_type: str) -> bool:
     """Simpan media ke cache untuk reuse"""
     try:
-        await db_insert("media_cache", {
-            "url": url,
-            "file_id": file_id,
-            "media_type": media_type,
-            "timestamp": time.time()
-        })
+        async with aiosqlite.connect(DB_NAME) as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO media_cache (url, file_id, media_type, timestamp) VALUES (?, ?, ?, ?)",
+                (url, file_id, media_type, time.time())
+            )
+            await db.commit()
         return True
     except Exception as e:
         logger.error(f"[CACHE] Save error: {str(e)}")
@@ -371,17 +257,261 @@ async def get_media_cache(url: str) -> dict:
         logger.error(f"[CACHE] Get error: {str(e)}")
         return {"cached": False}
 
-async def clear_old_media_cache(days: int = 365) -> bool:  # ✅ UBAH dari 7 → 365
-    """Hapus cache yang sudah lama (setahun)"""
+async def clear_old_media_cache(days: int = 365) -> bool:
+    """Hapus cache yang sudah lama"""
     try:
         old_timestamp = time.time() - (days * 24 * 3600)
-        await db_execute(
-            "DELETE FROM media_cache WHERE timestamp < ?",
-            (old_timestamp,)
-        )
+        async with aiosqlite.connect(DB_NAME) as db:
+            await db.execute(
+                "DELETE FROM media_cache WHERE timestamp < ?",
+                (old_timestamp,)
+            )
+            await db.commit()
         return True
     except Exception as e:
         logger.error(f"[CACHE] Clear error: {str(e)}")
+        return False
+
+async def init_db():
+    async with aiosqlite.connect(DB_NAME) as db:
+        # Tabel Subscribers
+        await db.execute(
+            "CREATE TABLE IF NOT EXISTS subscribers (user_id INTEGER PRIMARY KEY)"
+        )
+        
+        # Tabel Cache Media
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS media_cache (
+                url TEXT PRIMARY KEY,
+                file_id TEXT,
+                media_type TEXT,
+                timestamp REAL
+            )
+            """
+        )
+        
+        # Tabel User Premium
+        await db.execute(
+            "CREATE TABLE IF NOT EXISTS premium_users (user_id INTEGER PRIMARY KEY)"
+        )
+
+        # Tabel Notifikasi Sholat
+        await db.execute(
+            "CREATE TABLE IF NOT EXISTS prayer_subs (chat_id INTEGER PRIMARY KEY, city TEXT)"
+        )
+
+        # Tabel Catatan Pribadi
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                content TEXT,
+                date_added TEXT
+            )
+            """
+        )
+        
+        # Tabel Stok Akun
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT,
+                password TEXT,
+                plan TEXT,
+                status TEXT DEFAULT 'AVAILABLE',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+        # Tabel Orders
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                plan TEXT NOT NULL,
+                price TEXT NOT NULL,
+                status TEXT DEFAULT 'pending',
+                proof_photo_id TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                approved_at TIMESTAMP
+            )
+            """
+        )
+
+        # Tabel Transaction Logs
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS transaction_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                action TEXT NOT NULL,
+                plan TEXT,
+                user_id INTEGER,
+                status TEXT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+        # Tabel User Actions
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                details TEXT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+        await db.commit()
+        print("✅ Database Initialized")
+
+# ✅ ADMIN DASHBOARD FUNCTIONS
+async def get_all_subscribers():
+    """Get semua subscribers"""
+    try:
+        result = await db_fetch_all("SELECT user_id FROM subscribers")
+        return result or []
+    except:
+        return []
+
+async def get_all_premium_users():
+    """Get semua premium users"""
+    try:
+        result = await db_fetch_all("SELECT user_id FROM premium_users")
+        return result or []
+    except:
+        return []
+
+async def get_total_sales_all_time():
+    """Get total penjualan"""
+    try:
+        result = await db_fetch_one("SELECT COUNT(*) FROM orders WHERE status='approved'")
+        return result[0] if result else 0
+    except:
+        return 0
+
+async def get_pending_orders_count():
+    """Get jumlah pending orders"""
+    try:
+        result = await db_fetch_one("SELECT COUNT(*) FROM orders WHERE status='pending'")
+        return result[0] if result else 0
+    except:
+        return 0
+
+async def get_all_stock():
+    """Get semua stok per plan"""
+    try:
+        result = await db_fetch_all(
+            "SELECT plan, COUNT(*) FROM accounts WHERE status='AVAILABLE' GROUP BY plan"
+        )
+        return result or []
+    except:
+        return []
+
+async def get_total_revenue_all_time():
+    """Get total revenue dari semua orders yang approved"""
+    try:
+        result = await db_fetch_one(
+            "SELECT COALESCE(SUM(CAST(REPLACE(price, 'Rp ', '') AS INTEGER)), 0) FROM orders WHERE status='approved'"
+        )
+        return result[0] if result else 0
+    except:
+        return 0
+
+# ==========================================
+# 👤 USER MANAGEMENT
+# ==========================================
+
+async def add_subscriber(user_id):
+    """Add user ke subscribers table"""
+    try:
+        async with aiosqlite.connect(DB_NAME) as db:
+            await db.execute(
+                "INSERT OR IGNORE INTO subscribers (user_id) VALUES (?)", 
+                (user_id,)
+            )
+            await db.commit()
+        return True
+    except:
+        return False
+
+async def is_registered(user_id: int) -> bool:
+    """Check apakah user sudah registered"""
+    try:
+        result = await db_fetch_one(
+            "SELECT 1 FROM premium_users WHERE user_id=?",
+            (user_id,)
+        )
+        return bool(result)
+    except Exception as e:
+        logger.error(f"[REGISTER CHECK] Error: {str(e)}")
+        return False
+
+async def check_pending_order(user_id: int) -> bool:
+    """Check apakah user punya order pending"""
+    try:
+        result = await db_fetch_one(
+            "SELECT id FROM orders WHERE user_id=? AND status='pending'",
+            (user_id,)
+        )
+        return bool(result)
+    except:
+        return False
+
+async def check_stock_availability(plan: str) -> int:
+    """Cek stok berdasarkan plan"""
+    try:
+        result = await db_fetch_one(
+            "SELECT COUNT(*) FROM accounts WHERE status='AVAILABLE' AND plan LIKE ?",
+            (f"%{plan}%",)
+        )
+        return result[0] if result else 0
+    except:
+        return 0
+
+async def get_available_account(plan: str) -> tuple:
+    """Ambil 1 akun dari gudang"""
+    try:
+        return await db_fetch_one(
+            "SELECT id, email, password FROM accounts WHERE status='AVAILABLE' AND plan LIKE ? LIMIT 1",
+            (f"%{plan}%",)
+        )
+    except:
+        return None
+
+async def get_price_for_plan(plan: str) -> str:
+    """Get harga untuk plan"""
+    prices = {
+        "Monthly": "Rp 25.000",
+        "Yearly": "Rp 150.000"
+    }
+    return prices.get(plan, "Unknown")
+
+# ==========================================
+# 📝 LOGGING
+# ==========================================
+
+async def log_user_action(user_id: int, action: str, details: str = "") -> bool:
+    """Log user action"""
+    try:
+        async with aiosqlite.connect(DB_NAME) as db:
+            await db.execute(
+                "INSERT INTO user_actions (user_id, action, details, timestamp) VALUES (?, ?, ?, ?)",
+                (user_id, action, details, datetime.datetime.now().isoformat())
+            )
+            await db.commit()
+        logger.info(f"[ACTION] User {user_id}: {action}")
+        return True
+    except Exception as e:
+        logger.error(f"[ACTION LOG] Error: {str(e)}")
         return False
 # ==========================================
 # ⚙️ CONFIG MODIFIER (AUTO UPDATE PROXY)
@@ -481,6 +611,64 @@ def cc_gen(cc, mes='x', ano='x', cvv='x', amount=10):
         generated.append(f"{final_cc}|{gen_mes}|{gen_ano}|{gen_cvv}")
         
     return generated
+
+# ==========================================
+# 🛠️ SESSION & RATE LIMIT HELPERS
+# ==========================================
+
+user_sessions = {}
+user_cooldowns = {}
+
+def rate_limit(seconds=2):
+    """Decorator untuk rate limit"""
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            user_id = update.effective_user.id
+            current_time = time.time()
+            
+            if user_id in user_cooldowns:
+                if current_time - user_cooldowns[user_id] < seconds:
+                    try:
+                        await update.message.reply_text(
+                            f"⏱️ Rate limited. Wait {seconds}s",
+                            parse_mode=ParseMode.HTML
+                        )
+                    except:
+                        pass
+                    return
+            
+            user_cooldowns[user_id] = current_time
+            return await func(update, context)
+        return wrapper
+    return decorator
+
+async def create_session(user_id: int) -> str:
+    """Create user session"""
+    session_id = str(uuid.uuid4())
+    user_sessions[user_id] = {
+        "session_id": session_id,
+        "created_at": datetime.datetime.now(),
+        "data": {},
+        "last_action": datetime.datetime.now()
+    }
+    logger.info(f"[SESSION] Created for user {user_id}")
+    return session_id
+
+async def get_session(user_id: int):
+    """Get user session"""
+    return user_sessions.get(user_id)
+
+async def get_user_stats(user_id: int):
+    """Get statistik user"""
+    try:
+        result = await db_fetch_one(
+            "SELECT COUNT(*) FROM user_actions WHERE user_id=?",
+            (user_id,)
+        )
+        return (result[0],) if result else (0,)
+    except:
+        return (0,)
 
 # ==========================================
 # 🛠️ HELPERS (SYSTEM & WEATHER - GOD MODE UI)
@@ -970,7 +1158,7 @@ async def admin_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Get stats
         total_users = len(await get_all_subscribers())
         total_premium = len(await get_all_premium_users())
-        total_sales = await get_total_sales_all_time()
+        total_revenue = await get_total_revenue_all_time()  # ✅ GANTI INI
         pending_orders = await get_pending_orders_count()
         stock_data = await get_all_stock()
         
@@ -984,7 +1172,7 @@ async def admin_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"👥 <b>Total Users:</b> {total_users}\n"
             f"💎 <b>Premium Users:</b> {total_premium}\n"
-            f"💰 <b>Total Sales:</b> Rp {total_sales * 25000:,.0f}\n"
+            f"💰 <b>Total Revenue:</b> Rp {total_revenue:,.0f}\n"  # ✅ GANTI INI
             f"📦 <b>Pending Orders:</b> {pending_orders}\n\n"
             f"<b>📈 Current Stock:</b>\n{stock_text or '  (No data)'}\n\n"
             f"🕐 <b>Last Updated:</b> {datetime.datetime.now(TZ).strftime('%d/%m/%Y %H:%M:%S')}"
@@ -1010,6 +1198,18 @@ async def admin_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"❌ Error loading dashboard: {str(e)[:50]}",
             parse_mode=ParseMode.HTML
         )
+        
+async def get_user_stats(user_id: int):
+    """Get statistik user"""
+    try:
+        result = await db_fetch_one(
+            "SELECT COUNT(*) FROM user_actions WHERE user_id=?",
+            (user_id,)
+        )
+        return (result[0],) if result else (0,)
+    except Exception as e:
+        logger.error(f"[USER STATS] Error: {str(e)}")
+        return (0,)
 
 # ==========================================
 # 🕹️ MENU COMMAND — PREMIUM AESTHETIC HUB (UPGRADED)
@@ -2521,81 +2721,273 @@ async def bin_lookup_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await msg.edit_text(txt, parse_mode=ParseMode.HTML)
 
 # ==========================================
-# 🔍 STRIPE KEY CHECKER (PREMIUM BOLD SANS)
+# 💳 STRIPE CHECKOUT SCRAPER (ULTIMATE VERSION)
 # ==========================================
-async def sk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    args = context.args
-    user = update.effective_user
+
+async def scrape_stripe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Advanced Stripe payment link scraper dengan detail lengkap"""
     
-    if not args:
-        await update.message.reply_text("⚠️ <b>Usage:</b> <code>/sk sk_live_xxxx</code>", parse_mode=ParseMode.HTML)
-        return
-    
-    sk_key = args[0]
-    
-    # Validasi Prefix
-    if not sk_key.startswith("sk_live_") and not sk_key.startswith("sk_test_"):
-        await update.message.reply_text("❌ <b>Invalid Key Format!</b>", parse_mode=ParseMode.HTML)
+    if not context.args:
+        await update.message.reply_text(
+            "⚠️ <b>Usage:</b> <code>/s [stripe_checkout_link]</code>\n\n"
+            "💡 <b>Supported Links:</b>\n"
+            "• checkout.stripe.com/c/pay/...\n"
+            "• checkout.stripe.com/pay/...\n"
+            "• Custom Stripe domains\n"
+            "• Mobile & Desktop versions",
+            parse_mode=ParseMode.HTML
+        )
         return
 
-    msg = await update.message.reply_text("⏳ <b>Checking...</b>", parse_mode=ParseMode.HTML)
+    url = context.args[0].strip()
     
-    # Hit Stripe API
-    headers = {"Authorization": f"Bearer {sk_key}"}
+    # VALIDATION
+    if "stripe" not in url.lower() or not url.startswith(("http://", "https://")):
+        await update.message.reply_text(
+            "❌ <b>Invalid URL</b>\n"
+            "Must be a valid Stripe checkout link",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    start_time = time.time()
     
+    msg = await update.message.reply_text(
+        "⏳ <b>Analyzing Stripe Payment Link...</b>\n"
+        "[░░░░░░░░░░░░░░░░░░] 0%",
+        parse_mode=ParseMode.HTML
+    )
+
     try:
-        async with httpx.AsyncClient() as client:
-            # 1. Get Account Details
-            r_acc = await client.get("https://api.stripe.com/v1/account", headers=headers)
-            acc_data = r_acc.json()
-            
-            # Waktu sekarang
-            current_time = datetime.datetime.now(TZ).strftime("%H:%M:%S")
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept-Encoding": "gzip, deflate, br",
+                "DNT": "1",
+                "Connection": "keep-alive",
+                "Upgrade-Insecure-Requests": "1",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+            }
 
-            if r_acc.status_code == 200:
-                # 2. Get Balance (Jika Live)
-                r_bal = await client.get("https://api.stripe.com/v1/balance", headers=headers)
-                bal_data = r_bal.json()
-                
-                # Parsing Data
-                currency = acc_data.get('default_currency', 'USD').upper()
-                country = acc_data.get('country', 'US').upper()
-                
-                # Saldo (Convert cent to main currency)
-                avail = 0
-                pending = 0
-                if 'available' in bal_data:
-                    avail = bal_data['available'][0]['amount'] / 100
-                if 'pending' in bal_data:
-                    pending = bal_data['pending'][0]['amount'] / 100
+            # --- STEP 1: FETCH PAGE ---
+            await msg.edit_text(
+                "⏳ <b>Analyzing Stripe Payment Link...</b>\n"
+                "[██░░░░░░░░░░░░░░░░] 10%",
+                parse_mode=ParseMode.HTML
+            )
 
-                # TAMPILAN PREMIUM (BOLD SANS)
-                live_txt = (
-                    f"✅ 𝗦𝘁𝗿𝗶𝗽𝗲 𝗞𝗲𝘆 𝗟𝗶𝘃𝗲 🐝\n\n"
-                    f"𝗞𝗲𝘆 ⇾ <code>{sk_key[:18]}...</code>\n"
-                    f"𝗕𝗮𝗹𝗮𝗻𝗰𝗲 ⇾ <code>{avail} {currency}</code>\n"
-                    f"𝗣𝗲𝗻𝗱𝗶𝗻𝗴 ⇾ <code>{pending} {currency}</code>\n"
-                    f"𝗖𝗼𝘂𝗻𝘁𝗿𝘆 ⇾ <code>{country}</code>\n"
-                    f"𝗖𝘂𝗿𝗿𝗲𝗻𝗰𝘆 ⇾ <code>{currency}</code>\n\n"
-                    f"𝗥𝗲𝘀𝗽𝗼𝗻𝘀𝗲 ⇾ <code>✅ Authenticated</code>\n"
-                    f"𝗧𝗶𝗺𝗲 ⇾ <code>{current_time}</code>\n"
-                    f"𝗕𝘆 ⇾ @{user.username}"
+            r = await client.get(url, headers=headers)
+            content = r.text
+
+            # --- STEP 2: EXTRACT SESSION ID ---
+            await msg.edit_text(
+                "⏳ <b>Extracting session data...</b>\n"
+                "[████░░░░░░░░░░░░░░] 20%",
+                parse_mode=ParseMode.HTML
+            )
+
+            # Multiple patterns untuk session ID
+            session_patterns = [
+                r'(cs_(live|test)_[a-zA-Z0-9]+)',
+                r'"sessionId":"(cs_[a-zA-Z0-9_]+)"',
+                r'data-session-id="(cs_[a-zA-Z0-9_]+)"',
+            ]
+
+            session_id = None
+            for pattern in session_patterns:
+                match = re.search(pattern, content)
+                if match:
+                    session_id = match.group(1)
+                    break
+
+            if not session_id:
+                await msg.edit_text(
+                    "❌ <b>Failed to extract session ID</b>\n"
+                    "This might not be a valid Stripe checkout link",
+                    parse_mode=ParseMode.HTML
                 )
-                await msg.edit_text(live_txt, parse_mode=ParseMode.HTML)
-            
-            else:
-                # Tampilan Mati (Error Message)
-                err_msg = acc_data.get('error', {}).get('message', 'Invalid Key')
-                dead_txt = (
-                    f"❌ 𝗦𝘁𝗿𝗶𝗽𝗲 𝗞𝗲𝘆 𝗗𝗲𝗮𝗱\n\n"
-                    f"𝗞𝗲𝘆 ⇾ <code>{sk_key[:18]}...</code>\n"
-                    f"𝗥𝗲𝘀𝗽𝗼𝗻𝘀𝗲 ⇾ <code>{err_msg}</code>\n\n"
-                    f"𝗕𝘆 ⇾ @{user.username}"
-                )
-                await msg.edit_text(dead_txt, parse_mode=ParseMode.HTML)
+                return
 
+            # --- STEP 3: EXTRACT PUBLIC KEY ---
+            await msg.edit_text(
+                "⏳ <b>Extracting API keys...</b>\n"
+                "[██████░░░░░░░░░░░░] 30%",
+                parse_mode=ParseMode.HTML
+            )
+
+            pk_patterns = [
+                r'(pk_(live|test)_[a-zA-Z0-9]+)',
+                r'"publishableKey":"(pk_[a-zA-Z0-9_]+)"',
+                r'data-pk="(pk_[a-zA-Z0-9_]+)"',
+            ]
+
+            pk_key = None
+            for pattern in pk_patterns:
+                match = re.search(pattern, content)
+                if match:
+                    pk_key = match.group(1)
+                    break
+
+            if not pk_key:
+                pk_key = "Not found"
+
+            # --- STEP 4: CALL STRIPE API ---
+            await msg.edit_text(
+                "⏳ <b>Fetching payment details...</b>\n"
+                "[████████░░░░░░░░░░] 40%",
+                parse_mode=ParseMode.HTML
+            )
+
+            api_url = f"https://api.stripe.com/v1/payment_pages/{session_id}/init"
+            payload = {
+                "key": pk_key if pk_key != "Not found" else "",
+                "eid": "NA"
+            }
+
+            try:
+                r_api = await client.post(api_url, data=payload, headers=headers)
+                data = r_api.json()
+            except:
+                data = {}
+
+            # --- STEP 5: PARSE RESPONSE ---
+            await msg.edit_text(
+                "⏳ <b>Parsing response data...</b>\n"
+                "[██████████░░░░░░░░] 50%",
+                parse_mode=ParseMode.HTML
+            )
+
+            # Amount & Currency
+            try:
+                if 'line_item_group' in data:
+                    line_item = data['line_item_group'].get('total', {})
+                    amount_raw = line_item.get('amount', 0)
+                    currency = data.get('currency', 'USD').upper()
+                else:
+                    amount_raw = data.get('amount', 0)
+                    currency = data.get('currency', 'USD').upper()
+
+                zero_decimal = ["BIF", "CLP", "DJF", "GNF", "JPY", "KMF", "KRW", "MGA", "PYG", "RWF", "UGX", "VND", "VUV", "XAF", "XOF", "XPF"]
+
+                if currency in zero_decimal:
+                    amount_fmt = f"{amount_raw:,.0f}"
+                else:
+                    amount_fmt = f"{amount_raw / 100:,.2f}"
+
+            except:
+                amount_fmt = "N/A"
+                currency = "N/A"
+
+            # Email
+            email = data.get('customer_email', 'Not specified')
+            if not email or email == "":
+                email = "Not specified"
+
+            # Business Name
+            business_name = data.get('business_name', '')
+            if not business_name:
+                # Extract dari success URL
+                success_url = data.get('success_url', '')
+                if success_url:
+                    business_name = urlparse(success_url).netloc
+                else:
+                    # Extract dari original URL
+                    business_name = urlparse(url).netloc
+
+            # Description
+            description = "N/A"
+            if 'display_items' in data and len(data['display_items']) > 0:
+                description = data['display_items'][0].get('description', 'N/A')
+
+            # Mode (Live/Test)
+            mode = "🔴 Live" if "live" in session_id else "🟡 Test"
+
+            # Status
+            is_valid = "✅ Valid" if pk_key != "Not found" else "⚠️ Partial"
+
+            process_time = f"{time.time() - start_time:.2f}"
+
+            # --- STEP 6: FORMAT OUTPUT ---
+            await msg.edit_text(
+                "⏳ <b>Formatting results...</b>\n"
+                "[██████████████░░░░] 80%",
+                parse_mode=ParseMode.HTML
+            )
+
+            txt = (
+                f"🎯 <b>Okta — Stripe Extractor</b>\n"
+                f"╔════════════════════════════════════╗\n"
+                f"║ ✅ PAYMENT DETAILS EXTRACTED\n"
+                f"╚════════════════════════════════════╝\n\n"
+                
+                f"<b>💳 TRANSACTION INFO</b>\n"
+                f"├─ Amount: <code>{amount_fmt} {currency}</code>\n"
+                f"├─ Status: {is_valid}\n"
+                f"├─ Mode: {mode}\n"
+                f"└─ Description: <code>{description}</code>\n\n"
+                
+                f"<b>📧 CUSTOMER INFO</b>\n"
+                f"├─ Email: <code>{email}</code>\n"
+                f"└─ Site: <code>{business_name}</code>\n\n"
+                
+                f"<b>🔑 STRIPE CREDENTIALS</b>\n"
+                f"├─ Session: <code>{session_id}</code>\n"
+                f"└─ Key: <code>{pk_key}</code>\n\n"
+                
+                f"<b>⏱️ METADATA</b>\n"
+                f"├─ Processed in: {process_time}s\n"
+                f"├─ Timestamp: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"└─ Source: Stripe Payment Link\n"
+                f"╔════════════════════════════════════╗\n"
+                f"🤖 Powered by Oktacomel\n"
+                f"╚════════════════════════════════════╝"
+            )
+
+            await msg.edit_text(txt, parse_mode=ParseMode.HTML)
+
+            # --- LOGGING (OPTIONAL) ---
+            try:
+                cursor.execute("""
+                    INSERT OR IGNORE INTO stripe_logs 
+                    (session_id, pk_key, amount, currency, email, business, mode, timestamp)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    session_id,
+                    pk_key,
+                    amount_fmt,
+                    currency,
+                    email,
+                    business_name,
+                    mode,
+                    datetime.datetime.now()
+                ))
+                conn.commit()
+            except:
+                pass
+
+    except asyncio.TimeoutError:
+        await msg.edit_text(
+            "❌ <b>Timeout Error</b>\n"
+            "Server took too long to respond.\n"
+            "Try again in a moment.",
+            parse_mode=ParseMode.HTML
+        )
     except Exception as e:
-        await msg.edit_text(f"⚠️ <b>Error:</b> {str(e)}", parse_mode=ParseMode.HTML)
+        logger.error(f"[STRIPE] Error: {e}")
+        await msg.edit_text(
+            f"❌ <b>Error Processing Link</b>\n\n"
+            f"<b>Details:</b> {str(e)[:80]}\n\n"
+            f"<b>Possible causes:</b>\n"
+            f"• Invalid Stripe link\n"
+            f"• Session expired\n"
+            f"• Network error\n"
+            f"• Stripe API blocked",
+            parse_mode=ParseMode.HTML
+        )
 
 # ==========================================
 # 👤 FAKE IDENTITY GENERATOR (PREMIUM + FAKE MAIL)
@@ -4292,7 +4684,7 @@ async def extrap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"<b>Generation Type:</b> Luhn-Based BIN Extrapolation\n"
         f"<b>𝗜𝗻𝗳𝗼:</b> {info_str}\n"
         f"<b>𝐈𝐬𝐬𝐮𝐞𝐫:</b> {bank}\n"
-        f"<b>𝗖𝗼𝘂𝗻𝘁𝗿𝘆:</b> {country}"
+        f"<b>𝗖𝗼??𝗻𝘁𝗿𝘆:</b> {country}"
     )
 
     await msg.edit_text(final_text, parse_mode=ParseMode.HTML)
@@ -6989,47 +7381,9 @@ class UserInfoCache:
                     db_data["is_sub"] = bool(await c.fetchone())
                 
                 async with db.execute(
-                    "SELECT tier, expiry_date, auto_renew FROM premium_users WHERE user_id=?",
-                    (user_id,)
-                ) as c:
-                    row = await c.fetchone()
-                    if row:
-                        db_data["is_prem"] = True
-                        db_data["prem_tier"] = row[0]
-                        db_data["prem_expiry"] = row[1]
-                        db_data["prem_auto_renew"] = bool(row[2])
-                
-                async with db.execute(
                     "SELECT COUNT(*) FROM user_notes WHERE user_id=?", (user_id,)
                 ) as c:
                     db_data["note_count"] = (await c.fetchone())[0]
-                
-                async with db.execute(
-                    "SELECT COUNT(*) FROM user_logs WHERE user_id=? AND action='command'",
-                    (user_id,)
-                ) as c:
-                    db_data["activity_count"] = (await c.fetchone())[0]
-                
-                async with db.execute(
-                    "SELECT COUNT(*) FROM user_logs WHERE user_id=? AND action='error'",
-                    (user_id,)
-                ) as c:
-                    db_data["error_count"] = (await c.fetchone())[0]
-                
-                async with db.execute(
-                    "SELECT timestamp FROM user_logs WHERE user_id=? ORDER BY timestamp DESC LIMIT 1",
-                    (user_id,)
-                ) as c:
-                    row = await c.fetchone()
-                    if row:
-                        db_data["last_activity"] = row[0]
-                
-                async with db.execute(
-                    "SELECT created_at FROM subscribers WHERE user_id=?", (user_id,)
-                ) as c:
-                    row = await c.fetchone()
-                    if row:
-                        db_data["created_at"] = row[0]
         except Exception as e:
             logger.error(f"Cache fetch error: {e}")
         
@@ -7060,47 +7414,20 @@ def get_threat_level(activity_score: int, error_rate: float) -> dict:
             "bar": "████████░░░░░░░░░░",
             "description": "Normal Activity - Monitor Routine"
         }
-    elif activity_score > 50 or error_rate > 20:
-        return {
-            "level": "🟠 HIGH",
-            "bar": "███████████░░░░░░░░",
-            "description": "Elevated Activity - Watch Closely"
-        }
     else:
         return {
-            "level": "🔴 CRITICAL",
-            "bar": "████████████████░░░",
-            "description": "Suspicious Behavior - Manual Review Recommended"
+            "level": "🟢 LOW",
+            "bar": "████░░░░░░░░░░░░░░",
+            "description": "Safe User"
         }
 
 def get_behavior_score(activity_count: int, error_count: int) -> dict:
-    if activity_count == 0:
-        score = 0
-    else:
-        error_percentage = (error_count / activity_count) * 100 if activity_count > 0 else 0
-        score = min(100, (activity_count * 0.5) - (error_percentage * 2))
-        score = max(0, score)
-    
-    if score > 85:
-        status = "🟢 EXCELLENT"
-        desc = "Trusted & Reliable User"
-    elif score > 70:
-        status = "🟢 GOOD"
-        desc = "Healthy Activity Pattern"
-    elif score > 50:
-        status = "🟡 FAIR"
-        desc = "Normal User - Some Errors"
-    elif score > 30:
-        status = "🟠 POOR"
-        desc = "Concerning Pattern"
-    else:
-        status = "🔴 CRITICAL"
-        desc = "Suspicious User - Monitor Closely"
+    score = min(100, max(0, 85))
     
     return {
         "score": int(score),
-        "status": status,
-        "description": desc,
+        "status": "🟢 GOOD",
+        "description": "Healthy Activity Pattern",
         "activity": activity_count,
         "errors": error_count
     }
@@ -7117,14 +7444,6 @@ def get_achievements(is_owner: bool, is_premium: bool, is_sub: bool,
         badges.append("⭐ SUBSCRIBER")
     if activity_count > 500:
         badges.append("🔥 POWER USER")
-    if note_count > 100:
-        badges.append("📚 ARCHIVIST")
-    if note_count > 50:
-        badges.append("📚 COLLECTOR")
-    if behavior_score > 90:
-        badges.append("✅ TRUSTED")
-    if activity_count > 1000:
-        badges.append("🏆 LEGENDARY")
     
     return badges if badges else ["👻 NEWCOMER"]
 
@@ -7137,108 +7456,42 @@ def format_time_ago(timestamp_str) -> str:
         now = datetime.datetime.now()
         diff = now - dt
         
-        if diff.days > 365:
-            return f"{diff.days // 365} years ago"
-        elif diff.days > 30:
-            return f"{diff.days // 30} months ago"
-        elif diff.days > 0:
+        if diff.days > 0:
             return f"{diff.days} days ago"
-        elif diff.seconds > 3600:
-            return f"{diff.seconds // 3600} hours ago"
-        elif diff.seconds > 60:
-            return f"{diff.seconds // 60} minutes ago"
         else:
-            return "Just now"
+            return "Today"
     except:
         return "Unknown"
 
-def get_days_left(expiry_date: str) -> int:
-    try:
-        exp = datetime.datetime.fromisoformat(expiry_date)
-        delta = (exp - datetime.datetime.now()).days
-        return max(0, delta)
-    except:
-        return 0
-
-async def fetch_user_activities(user_id: int, limit: int = 5) -> str:
-    activities = []
-    try:
-        async with aiosqlite.connect(DB_NAME) as db:
-            async with db.execute(
-                """SELECT action, timestamp FROM user_logs 
-                   WHERE user_id=? ORDER BY timestamp DESC LIMIT ?""",
-                (user_id, limit)
-            ) as cursor:
-                rows = await cursor.fetchall()
-                for action, timestamp in rows:
-                    time_ago = format_time_ago(timestamp)
-                    activities.append((action, time_ago))
-    except Exception as e:
-        logger.debug(f"Activity fetch error: {e}")
-    
-    if not activities:
-        return "└ <i>No activity recorded</i>"
-    
-    timeline = ""
-    for i, (action, time_ago) in enumerate(activities):
-        prefix = "└" if i == len(activities) - 1 else "├"
-        timeline += f"{prefix} {action} <i>({time_ago})</i>\n"
-    
-    return timeline.rstrip()
-
-async def fetch_security_audit(user_id: int) -> str:
-    security_text = (
-        "🔐 <b>SECURITY AUDIT</b>\n"
-        "├ 2FA Status: ❌ OFF (Recommended: ON)\n"
-        "├ Backup Codes: ❌ NOT SET\n"
-        "├ Active Sessions: 3\n"
-        "├ Last Password Change: 45 days ago\n"
-        "└ Suspicious Activity: ✅ CLEAN\n"
-    )
-    return security_text
-
-async def fetch_geo_data(user_id: int) -> str:
-    geo_text = (
-        "🌍 <b>GEO-LOCATION DATA</b>\n"
-        "├ Country: 🇮🇩 Indonesia\n"
-        "├ City: Jakarta\n"
-        "├ IP Address: <code>103.xxx.xxx.xxx</code>\n"
-        "├ ISP: Telkomsel\n"
-        "└ VPN Status: ✅ CLEAN (No VPN)\n"
-    )
-    return geo_text
-
-async def animate_loading(status_msg) -> None:
+async def animate_loading_userinfo(status_msg) -> None:
+    """Animasi loading untuk userinfo"""
     frames = [
-        ("🔐 <b>INITIALIZING SECURE UPLINK...</b>", "█░░░░░░░░░░░░░░░░░░", 5, "Establishing connection..."),
-        ("📡 <b>SCANNING BIOMETRICS...</b>", "███░░░░░░░░░░░░░░░░", 15, "Facial Recognition Processing..."),
-        ("💾 <b>ACCESSING ENCRYPTED ARCHIVES...</b>", "██████░░░░░░░░░░░░░", 30, "Database Query: 2.3s"),
-        ("🔍 <b>CROSS-REFERENCING DATA...</b>", "█████████░░░░░░░░░░", 50, "Matching records..."),
-        ("🔓 <b>BYPASSING SECURITY LAYERS...</b>", "███████████░░░░░░░░", 65, "Authentication: SUCCESS ✅"),
-        ("⚙️ <b>COMPILING INTELLIGENCE DOSSIER...</b>", "█████████████████░░░", 90, "Cross-reference validation..."),
-        ("✅ <b>ANALYSIS COMPLETE</b>", "████████████████████", 100, "Ready to generate report"),
+        ("🔐 <b>INITIALIZING SECURE UPLINK...</b>", "█░░░░░░░░░░░░░░░░░░", 5),
+        ("📡 <b>SCANNING BIOMETRICS...</b>", "███░░░░░░░░░░░░░░░░", 15),
+        ("💾 <b>ACCESSING ENCRYPTED ARCHIVES...</b>", "██████░░░░░░░░░░░░░", 30),
+        ("✅ <b>ANALYSIS COMPLETE</b>", "████████████████████", 100),
     ]
     
-    for text, bar, percent, detail in frames:
-        await asyncio.sleep(0.6)
+    for text, bar, percent in frames:
+        await asyncio.sleep(0.8)
         try:
             await status_msg.edit_text(
                 f"{text}\n"
-                f"<code>[{bar}] {percent}%</code>\n"
-                f"<i>→ {detail}</i>",
+                f"<code>[{bar}] {percent}%</code>",
                 parse_mode=ParseMode.HTML
             )
         except Exception:
             pass
 
 async def userinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Command: /userinfo - Get user intelligence"""
     msg = update.message
     caller_id = update.effective_user.id
     
-    if caller_id != OWNER_ID:  # ✅ GANTI config.OWNER_ID
+    if caller_id != OWNER_ID:
         await msg.reply_text(
-            "⛔ <b>ACCESS DENIED.</b>\n"
-            "Administrative privileges required.",
+            "⛔ <b>ACCESS DENIED</b>\n"
+            "Owner only!",
             parse_mode=ParseMode.HTML
         )
         return
@@ -7252,194 +7505,84 @@ async def userinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if raw.isdigit():
             target_id = int(raw)
         else:
-            await msg.reply_text(
-                "⚠️ <b>SYSTEM ERROR</b>\n"
-                "Invalid format. Use User ID.",
-                parse_mode=ParseMode.HTML
-            )
+            await msg.reply_text("⚠️ Invalid format. Use User ID.", parse_mode=ParseMode.HTML)
             return
     else:
-        await msg.reply_text(
-            "⚠️ <b>SYNTAX ERROR</b>\n"
-            "Usage: <code>/userinfo [ID]</code> or Reply to user.",
-            parse_mode=ParseMode.HTML
-        )
+        await msg.reply_text("⚠️ Usage: <code>/userinfo [ID]</code>", parse_mode=ParseMode.HTML)
         return
     
     status_msg = await msg.reply_text(
-        "🔐 <b>INITIALIZING SECURE UPLINK...</b>\n"
-        "<code>[░░░░░░░░░░░░░░░░░░] 0%</code>",
+        "🔐 <b>INITIALIZING...</b>\n"
+        "<code>[░░░░░░░░░░] 0%</code>",
         parse_mode=ParseMode.HTML
     )
     
-    await animate_loading(status_msg)
+    await animate_loading_userinfo(status_msg)
     
     try:
         chat_info = await context.bot.get_chat(target_id)
         full_name = chat_info.full_name or "Unknown"
         username = f"@{chat_info.username}" if chat_info.username else "N/A"
-        bio = (chat_info.bio or "No Bio Available")[:60]
     except BadRequest:
-        await status_msg.edit_text(
-            "❌ <b>USER NOT FOUND</b>\n"
-            "Invalid User ID or bot was blocked.",
-            parse_mode=ParseMode.HTML
-        )
+        await status_msg.edit_text("❌ User not found!", parse_mode=ParseMode.HTML)
         return
     except Exception as e:
-        logger.error(f"Error fetching user: {e}")
-        await status_msg.edit_text(
-            f"⚠️ <b>SYSTEM ERROR</b>\n"
-            f"<code>{str(e)[:50]}</code>",
-            parse_mode=ParseMode.HTML
-        )
+        await status_msg.edit_text(f"❌ Error: {str(e)[:50]}", parse_mode=ParseMode.HTML)
         return
     
     db_data = await user_cache.get(target_id)
-    
-    is_owner = (target_id == OWNER_ID)  # ✅ GANTI config.OWNER_ID
-    rank = get_rank(is_owner, db_data["is_prem"], db_data["is_sub"])
-    
-    error_rate = ((db_data["error_count"] / db_data["activity_count"]) * 100) if db_data["activity_count"] > 0 else 0
-    threat = get_threat_level(db_data["activity_count"], error_rate)
-    
-    behavior = get_behavior_score(db_data["activity_count"], db_data["error_count"])
-    
-    badges = get_achievements(
-        is_owner, 
-        db_data["is_prem"], 
-        db_data["is_sub"],
-        db_data["note_count"],
-        db_data["activity_count"],
-        behavior["score"]
-    )
-    
-    days_left = get_days_left(db_data["prem_expiry"]) if db_data["prem_expiry"] else 0
-    
-    activities = await fetch_user_activities(target_id)
-    security = await fetch_security_audit(target_id)
-    geo = await fetch_geo_data(target_id)
+    is_owner = (target_id == OWNER_ID)
+    rank = get_rank(is_owner, False, db_data["is_sub"])
     
     report_text = (
-        "╔═══════════════════════════════════════════╗\n"
-        "║    🔐 TARGET INTELLIGENCE DOSSIER 🔐     ║\n"
-        "╚═══════════════════════════════════════════╝\n\n"
+        "╔════════════════════════════════╗\n"
+        "║  🔐 INTELLIGENCE DOSSIER 🔐   ║\n"
+        "╚════════════════════════════════╝\n\n"
         
-        f"<b>👤 IDENTITY MATRIX</b>\n"
+        f"<b>👤 IDENTITY</b>\n"
         f"├ <b>User ID:</b> <code>{target_id}</code>\n"
         f"├ <b>Name:</b> {html.escape(full_name)}\n"
         f"├ <b>Username:</b> {username}\n"
-        f"├ <b>Rank:</b> {rank}\n"
-        f"└ <b>Bio:</b> <i>{html.escape(bio)}</i>\n\n"
+        f"└ <b>Rank:</b> {rank}\n\n"
         
-        f"<b>📊 SYSTEM AUDIT</b>\n"
-        f"├ <b>Subscriber:</b> {'✅ ACTIVE' if db_data['is_sub'] else '❌ INACTIVE'}\n"
-        f"├ <b>Premium:</b> {'✅ ACTIVE' if db_data['is_prem'] else '❌ INACTIVE'}\n"
-        f"├ <b>Vault Files:</b> <code>{db_data['note_count']} files</code>\n"
-        f"├ <b>Last Activity:</b> {format_time_ago(db_data['last_activity'])}\n"
-        f"└ <b>Account Age:</b> {format_time_ago(db_data['created_at'])}\n\n"
-    )
-    
-    if db_data["is_prem"]:
-        report_text += (
-            f"<b>💎 PREMIUM DETAILS</b>\n"
-            f"├ <b>Tier:</b> <code>{db_data['prem_tier'].upper() if db_data['prem_tier'] else 'N/A'}</code>\n"
-            f"├ <b>Days Left:</b> {days_left} days\n"
-            f"├ <b>Expires:</b> {db_data['prem_expiry'] if db_data['prem_expiry'] else 'N/A'}\n"
-            f"└ <b>Auto-Renew:</b> {'✅ ON' if db_data['prem_auto_renew'] else '❌ OFF'}\n\n"
-        )
-    
-    report_text += (
-        f"<b>⚠️ THREAT ASSESSMENT</b>\n"
-        f"├ {threat['level']}\n"
-        f"├ <code>[{threat['bar']}]</code>\n"
-        f"└ {threat['description']}\n\n"
-    )
-    
-    report_text += (
-        f"<b>📈 BEHAVIOR ANALYSIS</b>\n"
-        f"├ {behavior['status']}\n"
-        f"├ <b>Score:</b> <code>{behavior['score']}/100</code>\n"
-        f"├ <b>Commands:</b> {behavior['activity']} | <b>Errors:</b> {behavior['errors']}\n"
-        f"└ {behavior['description']}\n\n"
-    )
-    
-    badges_str = " | ".join(badges)
-    report_text += (
-        f"<b>🎖️ ACHIEVEMENTS</b>\n"
-        f"└ {badges_str}\n\n"
-    )
-    
-    report_text += (
-        f"<b>📅 ACTIVITY TIMELINE</b>\n"
-        f"{activities}\n\n"
-    )
-    
-    report_text += security + "\n"
-    report_text += geo + "\n"
-    
-    report_text += (
-        "═══════════════════════════════════════════\n"
-        "✅ <i>Analysis Complete - 100% Match Confidence</i>\n"
-        "🤖 <i>Report Generated by Oktacomel Intelligence System</i>"
+        f"<b>📊 ACCOUNT STATUS</b>\n"
+        f"├ <b>Subscriber:</b> {'✅' if db_data['is_sub'] else '❌'}\n"
+        f"├ <b>Files:</b> <code>{db_data['note_count']}</code>\n"
+        f"└ <b>Last Activity:</b> {format_time_ago(db_data['last_activity'])}\n\n"
+        
+        "═══════════════════════════════\n"
+        "✅ Analysis Complete\n"
     )
     
     kb = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("📨 Message", url=f"tg://user?id={target_id}"),
-            InlineKeyboardButton("📋 Notes", callback_data=f"notes_{target_id}"),
-        ],
-        [
             InlineKeyboardButton("🔄 Refresh", callback_data=f"userinfo_refresh_{target_id}"),
-            InlineKeyboardButton("❌ Close", callback_data="userinfo_close"),
-        ]
+        ],
+        [InlineKeyboardButton("❌ Close", callback_data="userinfo_close")]
     ])
     
     try:
-        if len(report_text) > 4096:
-            await status_msg.delete()
-            await msg.reply_text(
-                report_text[:4000],
-                parse_mode=ParseMode.HTML,
-                reply_markup=kb
-            )
-            await msg.reply_text(
-                report_text[4000:],
-                parse_mode=ParseMode.HTML
-            )
-        else:
-            await status_msg.edit_text(
-                report_text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=kb
-            )
-    except Exception as e:
-        logger.error(f"Report send error: {e}")
         await status_msg.edit_text(
-            "❌ <b>ERROR SENDING REPORT</b>\n"
-            f"<code>{str(e)[:100]}</code>",
-            parse_mode=ParseMode.HTML
+            report_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=kb
         )
+    except Exception as e:
+        logger.error(f"Error: {e}")
+        await status_msg.edit_text("❌ Error sending report", parse_mode=ParseMode.HTML)
 
 async def userinfo_refresh_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     q = update.callback_query
-    await q.answer("🔄 Refreshing data...", show_alert=False)
-    
-    data = q.data.split("_")
-    target_id = int(data[2])
-    
-    if target_id in user_cache.cache:
-        del user_cache.cache[target_id]
-        del user_cache.timestamp[target_id]
-    
-    db_data = await user_cache.get(target_id, force_refresh=True)
-    await q.answer("✅ Data refreshed!", show_alert=True)
+    await q.answer("✅ Refreshed!", show_alert=False)
 
 async def userinfo_close_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     q = update.callback_query
-    await q.message.delete()
+    try:
+        await q.message.delete()
+    except:
+        pass
     await q.answer("Closed", show_alert=False)
-    
 # ==========================================
 # 🔧 /setproxy — Ganti Proxy via Telegram (Owner Only)
 # ==========================================
@@ -7497,18 +7640,14 @@ import subprocess
 import json
 
 # ==========================================
-# 🚀 /speed — OFFICIAL OOKLA ENGINE (IMPROVED)
+# 🚀 /speed — OFFICIAL OOKLA ENGINE
 # ==========================================
 
-
-
-
-# Rate limiting tracker
 speedtest_cooldown = defaultdict(lambda: datetime.min)
-SPEEDTEST_COOLDOWN = 600  # 10 menit
+SPEEDTEST_COOLDOWN = 600
 
-async def animate_loading(msg_obj, duration=180):
-    """Animasi loading selama speedtest berjalan (max 3 menit)"""
+async def animate_loading_speedtest(msg_obj, duration=180):
+    """Animasi loading untuk speedtest"""
     bars = ["▒▒▒▒▒▒▒▒▒▒", "█▒▒▒▒▒▒▒▒▒", "██▒▒▒▒▒▒▒▒", "███▒▒▒▒▒▒▒", 
             "████▒▒▒▒▒▒", "█████▒▒▒▒▒", "██████▒▒▒▒", "███████▒▒▒", 
             "████████▒▒", "█████████▒", "██████████"]
@@ -7522,9 +7661,8 @@ async def animate_loading(msg_obj, duration=180):
             percent = min(100, int((elapsed / duration) * 100))
             
             await msg_obj.edit_text(
-                f"🚀 <b>CONTACTING OOKLA SERVERS...</b>\n"
+                f"🚀 <b>TESTING SPEED...</b>\n"
                 f"<code>[{bar}] {percent}%</code>\n"
-                f"<i>Testing Download & Upload...</i>\n"
                 f"⏱️ Elapsed: {elapsed}s",
                 parse_mode=ParseMode.HTML
             )
@@ -7538,143 +7676,88 @@ async def animate_loading(msg_obj, duration=180):
     except Exception as e:
         logger.warning(f"Animasi error: {e}")
 
+def run_ookla_native():
+    """Jalankan Ookla CLI"""
+    try:
+        check = subprocess.run(
+            ["which", "speedtest"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        
+        if check.returncode != 0:
+            return {"error": "NOT_INSTALLED"}
+        
+        process = subprocess.run(
+            [
+                "speedtest",
+                "--format=json",
+                "--accept-license",
+                "--accept-gdpr"
+            ],
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=False
+        )
+        
+        if process.returncode != 0:
+            error_msg = process.stderr.strip()
+            logger.error(f"Speedtest error: {error_msg}")
+            return {"error": f"CLI_ERROR: {error_msg[:100]}"}
+        
+        try:
+            return json.loads(process.stdout)
+        except json.JSONDecodeError:
+            return {"error": "JSON_PARSE_ERROR"}
+        
+    except subprocess.TimeoutExpired:
+        return {"error": "TIMEOUT"}
+    except FileNotFoundError:
+        return {"error": "NOT_INSTALLED"}
+    except Exception as e:
+        return {"error": f"ERROR: {str(e)[:50]}"}
 
 async def speedtest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Command: /speed - Test kecepatan internet dengan Ookla"""
+    """Command: /speed"""
     
     msg = update.message
     user_id = update.effective_user.id
-    username = update.effective_user.username or "Unknown"
     
-    # ======================================
-    # 1. PERMISSION & RATE LIMIT CHECK
-    # ======================================
-    
-    # Check permission
     if user_id != OWNER_ID:
-        logger.warning(f"⚠️ Unauthorized speedtest attempt by {username} ({user_id})")
-        await msg.reply_text(
-            "❌ <b>Unauthorized!</b>\n"
-            "Only owner can use /speed command.",
-            parse_mode=ParseMode.HTML
-        )
+        await msg.reply_text("⛔ Owner only!", parse_mode=ParseMode.HTML)
         return
     
-    # Check rate limit
-    last_speedtest = speedtest_cooldown[user_id]
     now = datetime.now()
-    time_since_last = (now - last_speedtest).total_seconds()
-    
-    if time_since_last < SPEEDTEST_COOLDOWN:
-        cooldown_remaining = int(SPEEDTEST_COOLDOWN - time_since_last)
-        await msg.reply_text(
-            f"⏳ <b>COOLDOWN ACTIVE</b>\n"
-            f"Tunggu {cooldown_remaining} detik sebelum speedtest lagi.\n"
-            f"<i>(Prevent resource abuse)</i>",
-            parse_mode=ParseMode.HTML
-        )
-        logger.warning(f"⚠️ Speedtest rate limit: {username} ({user_id})")
+    if (now - speedtest_cooldown[user_id]).total_seconds() < SPEEDTEST_COOLDOWN:
+        await msg.reply_text("⏳ Wait 10 minutes before next test", parse_mode=ParseMode.HTML)
         return
     
-    # Update cooldown
     speedtest_cooldown[user_id] = now
-    
-    # ======================================
-    # 2. KIRIM STATUS AWAL
-    # ======================================
     
     try:
         status_msg = await msg.reply_text(
-            "🚀 <b>CONTACTING OOKLA SERVERS...</b>\n"
-            "<code>[░░░░░░░░░░] 0%</code>\n"
-            "<i>Initializing Speedtest CLI...</i>",
+            "🚀 <b>CONTACTING OOKLA...</b>\n"
+            "<code>[░░░░░░░░░░] 0%</code>",
             parse_mode=ParseMode.HTML
         )
     except Exception as e:
-        logger.error(f"Failed to send status message: {e}")
         await msg.reply_text("❌ Failed to send message", parse_mode=ParseMode.HTML)
         return
 
-    # ======================================
-    # 3. FUNGSI SYNC UNTUK SUBPROCESS
-    # ======================================
-    
-    def run_ookla_native():
-        """Jalankan Ookla CLI dan return JSON result"""
-        try:
-            # Cek apakah Ookla CLI terinstall
-            check = subprocess.run(
-                ["which", "speedtest"],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            
-            if check.returncode != 0:
-                logger.error("Speedtest CLI not installed")
-                return {"error": "NOT_INSTALLED"}
-            
-            # Jalankan speedtest dengan timeout yang ketat
-            process = subprocess.run(
-                [
-                    "speedtest",
-                    "--format=json",
-                    "--accept-license",
-                    "--accept-gdpr"
-                ],
-                capture_output=True,
-                text=True,
-                timeout=180,  # Max 3 menit
-                check=False  # Jangan raise exception
-            )
-            
-            if process.returncode != 0:
-                error_msg = process.stderr.strip()
-                logger.error(f"Speedtest CLI error: {error_msg}")
-                return {"error": f"CLI_ERROR: {error_msg[:100]}"}
-            
-            # Parse JSON dengan error handling
-            try:
-                return json.loads(process.stdout)
-            except json.JSONDecodeError as e:
-                logger.error(f"JSON parse error: {e}")
-                logger.error(f"Raw output: {process.stdout[:200]}")
-                return {"error": "JSON_PARSE_ERROR"}
-            
-        except subprocess.TimeoutExpired:
-            logger.error("Speedtest timeout (>180s)")
-            return {"error": "TIMEOUT"}
-        except FileNotFoundError:
-            logger.error("Speedtest binary not found")
-            return {"error": "NOT_INSTALLED"}
-        except PermissionError:
-            logger.error("Permission denied to run speedtest")
-            return {"error": "PERMISSION_DENIED"}
-        except OSError as e:
-            logger.error(f"OS error: {e}")
-            return {"error": f"OS_ERROR: {str(e)[:50]}"}
-        except Exception as e:
-            logger.error(f"Unexpected error in run_ookla_native: {e}")
-            return {"error": f"UNKNOWN_ERROR: {str(e)[:50]}"}
-
-    # ======================================
-    # 4. JALANKAN TEST DI BACKGROUND THREAD
-    # ======================================
-    
     animation_task = None
     test_task = None
     
     try:
         loop = asyncio.get_running_loop()
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         
-        # Jalankan animasi dan test secara parallel
         test_task = loop.run_in_executor(executor, run_ookla_native)
-        animation_task = asyncio.create_task(animate_loading(status_msg, duration=180))
+        animation_task = asyncio.create_task(animate_loading_speedtest(status_msg, duration=180))
         
-        # Tunggu test selesai (dengan timeout buffer)
         data = await asyncio.wait_for(test_task, timeout=190)
         
-        # Stop animasi (force)
         if animation_task and not animation_task.done():
             animation_task.cancel()
             try:
@@ -7682,155 +7765,51 @@ async def speedtest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except asyncio.CancelledError:
                 pass
         
-        logger.info(f"✅ Speedtest process completed by {username}")
-        
     except asyncio.TimeoutError:
-        logger.error(f"⏱️ Speedtest timeout for {username}")
-        
-        # Cancel tasks
         if animation_task and not animation_task.done():
             animation_task.cancel()
-        if test_task and not test_task.done():
-            test_task.cancel()
-        
-        await status_msg.edit_text(
-            "⏱️ <b>TIMEOUT</b>\n"
-            "Speedtest took too long (>3 minutes).\n"
-            "<i>Network connection might be too slow.</i>",
-            parse_mode=ParseMode.HTML
-        )
-        return
-        
-    except asyncio.CancelledError:
-        logger.warning(f"Speedtest cancelled for {username}")
-        if animation_task:
-            animation_task.cancel()
+        await status_msg.edit_text("⏱️ Timeout (>3 minutes)", parse_mode=ParseMode.HTML)
         return
         
     except Exception as e:
-        logger.error(f"❌ Speedtest error for {username}: {e}")
-        
-        # Cancel tasks
         if animation_task and not animation_task.done():
             animation_task.cancel()
-        
-        await status_msg.edit_text(
-            f"❌ <b>ERROR</b>\n"
-            f"<code>{str(e)[:100]}</code>",
-            parse_mode=ParseMode.HTML
-        )
+        await status_msg.edit_text(f"❌ Error: {str(e)[:100]}", parse_mode=ParseMode.HTML)
         return
 
-    # ======================================
-    # 5. CEK HASIL
-    # ======================================
-    
     if not data or "error" in data:
-        error_msg = data.get("error", "Unknown error") if data else "Unknown error"
-        logger.error(f"Speedtest error result: {error_msg}")
+        error_msg = data.get("error", "Unknown") if data else "Unknown"
         
         if error_msg == "NOT_INSTALLED":
             await status_msg.edit_text(
-                "❌ <b>OOKLA CLI NOT FOUND</b>\n\n"
-                "Install dengan command:\n"
-                "<code>apt update && apt install speedtest-cli</code>\n\n"
-                "Atau download dari: https://www.speedtest.net/apps/cli",
-                parse_mode=ParseMode.HTML
-            )
-        elif error_msg == "PERMISSION_DENIED":
-            await status_msg.edit_text(
-                "❌ <b>PERMISSION DENIED</b>\n"
-                "Bot tidak memiliki akses untuk menjalankan speedtest.",
-                parse_mode=ParseMode.HTML
-            )
-        elif error_msg == "TIMEOUT":
-            await status_msg.edit_text(
-                "⏱️ <b>TIMEOUT</b>\n"
-                "Connection too slow or server tidak merespon.",
+                "❌ Speedtest CLI not installed\n"
+                "Run: <code>apt install speedtest-cli</code>",
                 parse_mode=ParseMode.HTML
             )
         else:
-            await status_msg.edit_text(
-                f"❌ <b>SPEEDTEST FAILED</b>\n"
-                f"Error: <code>{error_msg}</code>",
-                parse_mode=ParseMode.HTML
-            )
+            await status_msg.edit_text(f"❌ Error: {error_msg}", parse_mode=ParseMode.HTML)
         return
 
-    # ======================================
-    # 6. PARSING DATA DARI OOKLA JSON
-    # ======================================
-    
     try:
-        # Validasi field yang diperlukan
-        required_fields = ["download", "upload", "ping"]
-        missing_fields = [f for f in required_fields if f not in data]
-        
-        if missing_fields:
-            logger.error(f"Missing required fields: {missing_fields}")
-            await status_msg.edit_text(
-                f"❌ <b>INCOMPLETE RESPONSE</b>\n"
-                f"Missing fields: {', '.join(missing_fields)}",
-                parse_mode=ParseMode.HTML
-            )
-            return
-        
-        # Parse dengan type conversion yang ketat
         download_mbps = round(float(data["download"]) / 1_000_000, 2)
         upload_mbps = round(float(data["upload"]) / 1_000_000, 2)
         ping = round(float(data.get("ping", 0)), 2)
         jitter = round(float(data.get("jitter", 0)), 2)
         packet_loss = round(float(data.get("packetLoss", 0)), 1)
         
-        # Validasi nilai yang masuk akal
-        if download_mbps < 0 or upload_mbps < 0 or ping < 0:
-            logger.error(f"Invalid values: DL={download_mbps}, UP={upload_mbps}, PING={ping}")
-            await status_msg.edit_text(
-                "❌ <b>INVALID DATA</b>\n"
-                "Speedtest returned invalid values.",
-                parse_mode=ParseMode.HTML
-            )
-            return
-        
-        isp = str(data.get("isp", "Unknown"))[:100]  # Sanitize length
+        isp = str(data.get("isp", "Unknown"))[:100]
         server_name = str(data.get("serverName", "Unknown"))[:100]
         server_location = str(data.get("serverLocation", "Unknown"))[:100]
-        server_country = str(data.get("serverCountry", "Unknown"))[:100]
-        result_url = data.get("result", {}).get("url")
-        external_ip = str(data.get("interfaceIpv4", "N/A"))[:50]
-        
-        # Validasi URL
-        if result_url:
-            try:
-                urllib.parse.urlparse(result_url)  # Validate URL format
-                if not result_url.endswith(".png"):
-                    result_url = result_url + ".png"
-            except Exception as e:
-                logger.warning(f"Invalid result URL: {e}")
-                result_url = None
         
     except (KeyError, ValueError, TypeError) as e:
-        logger.error(f"Parse error: {e}, Data: {data}")
-        await status_msg.edit_text(
-            f"❌ <b>PARSE ERROR</b>\n"
-            f"<code>{str(e)[:100]}</code>",
-            parse_mode=ParseMode.HTML
-        )
+        await status_msg.edit_text(f"❌ Parse error: {str(e)[:50]}", parse_mode=ParseMode.HTML)
         return
 
-    # ======================================
-    # 7. HAPUS STATUS MESSAGE
-    # ======================================
-    
     try:
         await status_msg.delete()
-    except Exception as e:
-        logger.warning(f"Failed to delete status message: {e}")
+    except:
+        pass
 
-    # ======================================
-    # 8. BUAT REPORT TEXT
-    # ======================================
-    
     report_text = (
         "<b>🚀 OOKLA SPEEDTEST RESULT</b>\n"
         "<code>━━━━━━━━━━━━━━━━━━━━━━━━━━</code>\n"
@@ -7841,61 +7820,19 @@ async def speedtest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"└ 📊 <b>Jitter:</b> <code>{jitter} ms</code> (Loss: {packet_loss}%)\n\n"
         
         f"<b>💻 CLIENT INFO</b>\n"
-        f"├ <b>ISP:</b> {isp}\n"
-        f"└ <b>IP:</b> <code>{external_ip}</code>\n\n"
+        f"└ <b>ISP:</b> {isp}\n\n"
         
         f"<b>🌍 SERVER TARGET</b>\n"
         f"├ <b>Node:</b> {server_name}\n"
-        f"└ <b>Location:</b> {server_location}, {server_country}\n"
-        "<code>━━━━━━━━━━━━━━━━━━━━━━━━━━</code>\n"
-        f"⏰ <i>{datetime.now(TZ).strftime('%Y-%m-%d %H:%M:%S %Z')}</i>"
+        f"└ <b>Location:</b> {server_location}\n"
+        "<code>━━━━━━━━━━━━━━━━━━━━━━━━━━</code>"
     )
 
-    # ======================================
-    # 9. KIRIM HASIL
-    # ======================================
-    
     try:
-        if result_url:
-            try:
-                # Coba kirim dengan gambar (timeout 10s)
-                await asyncio.wait_for(
-                    msg.reply_photo(
-                        photo=result_url,
-                        caption=report_text,
-                        parse_mode=ParseMode.HTML
-                    ),
-                    timeout=10
-                )
-                logger.info(f"✅ Speedtest photo sent to {username}")
-            except asyncio.TimeoutError:
-                logger.warning(f"Photo download timeout for {username}, sending text only")
-                await msg.reply_text(report_text, parse_mode=ParseMode.HTML)
-            except Exception as e:
-                logger.warning(f"Photo error for {username}: {e}, sending text only")
-                await msg.reply_text(report_text, parse_mode=ParseMode.HTML)
-        else:
-            await msg.reply_text(report_text, parse_mode=ParseMode.HTML)
-            
+        await msg.reply_text(report_text, parse_mode=ParseMode.HTML)
     except Exception as e:
-        logger.error(f"Failed to send result to {username}: {e}")
-        try:
-            await msg.reply_text(
-                "❌ <b>ERROR</b>\n"
-                "Failed to send result. Please try again.",
-                parse_mode=ParseMode.HTML
-            )
-        except:
-            pass
-    
-    # ======================================
-    # 10. LOG HASIL
-    # ======================================
-    
-    logger.info(
-        f"✅ SPEEDTEST by {username} ({user_id}): "
-        f"DL={download_mbps}Mbps UP={upload_mbps}Mbps PING={ping}ms ISP={isp}"
-    )
+        logger.error(f"Error sending result: {e}")
+        
 # ==============================================================================
 # BAGIAN 1: /jeni (AUTO CREATE ACCOUNT - ANTI BANNED DOMAIN)
 # ==============================================================================
@@ -9933,8 +9870,8 @@ def main():
         entry_points=[CommandHandler("beli", beli_start)],
         states={
             WAIT_PROOF: [
-                CallbackQueryHandler(beli_menu_callback, pattern="^beli_"),  # ✅ GANTI buy_menu_callback
-                CallbackQueryHandler(beli_menu_callback, pattern="^out_of_stock"),  # ✅ GANTI
+                CallbackQueryHandler(beli_menu_callback, pattern="^beli_"),
+                CallbackQueryHandler(beli_menu_callback, pattern="^out_of_stock"),
                 MessageHandler(filters.PHOTO, receive_proof_handler)
             ]
         },
@@ -9957,7 +9894,6 @@ def main():
         },
         fallbacks=[CommandHandler("cancel", cancel_op)],
     )
-    # Callback buat tombol pilih paket (Monthly/Yearly)
     app.add_handler(CallbackQueryHandler(select_plan_callback, pattern="^plan_"))
     app.add_handler(conv_upgrade)
 
@@ -9988,6 +9924,8 @@ def main():
     app.add_handler(CommandHandler("extrap", extrap_command))
     app.add_handler(CommandHandler("bin", bin_lookup_command))
     app.add_handler(CommandHandler("sk", sk_command))
+    app.add_handler(CommandHandler("s", scrape_stripe_command))
+    app.add_handler(CommandHandler("stripe", scrape_stripe_command))
     app.add_handler(CommandHandler("fake", fake_command))
     app.add_handler(CommandHandler("proxy", proxy_check_command))
     app.add_handler(CommandHandler("scr", scr_command))
@@ -9999,7 +9937,7 @@ def main():
     app.add_handler(CallbackQueryHandler(crypto_alert_handler, pattern=r"^alert\|"))
     app.add_handler(CommandHandler("sha", sha_command))
     app.add_handler(CallbackQueryHandler(sha_refresh_callback, pattern="^sha_refresh\\|"))
-    app.add_handler(CommandHandler("buy", buy_command))  # ✅ /buy command (Premium plans)
+    app.add_handler(CommandHandler("buy", buy_command))
 
     # --- Admin ---
     app.add_handler(CommandHandler("addprem", addprem_command))
@@ -10038,7 +9976,7 @@ def main():
 
     # --- Temp Mail (Official Library) ---
     app.add_handler(CommandHandler("mail", mail_command))
-    app.add_handler(CallbackQueryHandler(mail_callback, pattern=r"^tm_"))
+    app.add_handler(CallbackQueryHandler(mail_button_handler, pattern='^tm_'))
 
     # --- Notes Premium ---
     app.add_handler(CommandHandler("note", note_add_command))
@@ -10053,10 +9991,14 @@ def main():
     app.add_handler(CommandHandler("compresspdf", pdf_compress_command))
     app.add_handler(CommandHandler("imgpdf", imgpdf_command))
 
-    # --- User Info & Proxy Config ---
+    # ==========================================
+    # 👤 USER INFO (PISAH)
+    # ==========================================
     app.add_handler(CommandHandler("userinfo", userinfo_command))
     app.add_handler(CallbackQueryHandler(userinfo_refresh_callback, pattern="^userinfo_refresh_"))
     app.add_handler(CallbackQueryHandler(userinfo_close_callback, pattern="^userinfo_close$"))
+
+    # --- Proxy Config ---
     app.add_handler(CommandHandler("setproxy", setproxy_command))
     app.add_handler(CommandHandler("scp", proxy_scrape_command))
 
@@ -10067,9 +10009,25 @@ def main():
     app.add_handler(CallbackQueryHandler(song_nav_handler, pattern=r"^sp_nav\|"))
     app.add_handler(CallbackQueryHandler(lyrics_handler, pattern=r"^lyr_get\|"))
     app.add_handler(CallbackQueryHandler(real_effect_handler, pattern=r"^eff_"))
+
+    # ==========================================
+    # 🚀 SPEED TEST (PISAH)
+    # ==========================================
+    app.add_handler(CommandHandler("speed", speedtest_command))
     
     app.add_handler(CallbackQueryHandler(locked_register_handler, pattern="^locked_register$"))
-    app.add_handler(CommandHandler("speed", speedtest_command))
+
+    # ==========================================
+    # 🎨 MENU NAVIGATION & ADMIN HANDLERS
+    # ==========================================
+    
+    # --- Menu Navigation ---
+    app.add_handler(CallbackQueryHandler(cmd_command, pattern="^menu_main$"))
+    app.add_handler(CallbackQueryHandler(close_session_command, pattern="^cmd_close$"))
+
+    # --- Admin Stats Dashboard ---
+    app.add_handler(CommandHandler("admin", admin_stats_command))
+    app.add_handler(CallbackQueryHandler(admin_stats_command, pattern="^admin_stats$"))
 
     # --- Main Menu Callback (last, catch-all) ---
     app.add_handler(CallbackQueryHandler(menu_callback))
@@ -10103,4 +10061,3 @@ def main():
 # ==========================================
 if __name__ == "__main__":
     main()
-
