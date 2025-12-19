@@ -3367,6 +3367,10 @@ async def img_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"3. Coba lagi",
                 parse_mode=ParseMode.HTML
             )
+async def sk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("SK command jalan")
+
+
 # ==========================================
 # 🗣️ TEXT TO SPEECH GOOGLE (/tts)
 # ==========================================
@@ -10058,3 +10062,4 @@ def main():
 # ==========================================
 if __name__ == "__main__":
     main()
+
